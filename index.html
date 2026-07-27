@@ -802,6 +802,14 @@ async function dbSaveProduct(p) {
 async function dbDeleteProduct(id) {
   await chk(await SB.from('products').delete().eq('id', id));
 }
+/* Eliminazione ordine: si cancella la testata, le righe seguono per ON DELETE CASCADE.
+   Lato database la policy RLS "or_del" consente il DELETE solo al ruolo admin:
+   se qualcun altro ci provasse, non verrebbe cancellata nessuna riga. */
+async function dbDeleteOrder(id) {
+  const r = await SB.from('orders').delete().eq('id', id).select('id');
+  await chk(r);
+  if (!r.data || r.data.length === 0) throw new Error("Eliminazione non consentita: solo l'amministrazione può eliminare gli ordini.");
+}
 
 /* Prodotti importati da Shopify (matineeb2b.com) */
 /* i dati arrivano dal database (loadAll) */
@@ -2269,6 +2277,9 @@ function Orders({
   const isSup = isAdmin || isDir;
   const [edit, setEdit] = useState(null);
   const [send, setSend] = useState(null);
+  const [del, setDel] = useState(null);
+  const [delBusy, setDelBusy] = useState(false);
+  const [delErr, setDelErr] = useState("");
   const [fAgent, setFAgent] = useState("all");
   const agentsList = db.users.filter(u => u.role === "agent");
   const base = isSup ? db.orders : db.orders.filter(o => o.agentId === session.id);
@@ -2295,6 +2306,24 @@ function Orders({
       } : x)
     }));
     persist(dbOrderStatus(o.id, next));
+  };
+  const doDelete = async () => {
+    if (!del || delBusy) return;
+    setDelBusy(true);
+    setDelErr("");
+    try {
+      await dbDeleteOrder(del.id);
+      setDb(d => ({
+        ...d,
+        orders: d.orders.filter(x => x.id !== del.id)
+      }));
+      setDel(null);
+    } catch (e) {
+      console.error(e);
+      setDelErr(e.message || String(e));
+    } finally {
+      setDelBusy(false);
+    }
   };
   return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
     className: "page-h"
@@ -2366,10 +2395,16 @@ function Orders({
   }, "Invia ordine"), " ", /*#__PURE__*/React.createElement("button", {
     className: "btn light sm",
     onClick: () => genOrderPDF(o, db)
-  }, "Scarica PDF"), " "), o.status === "confermato" && isAdmin && /*#__PURE__*/React.createElement("button", {
+  }, "Scarica PDF"), " "), o.status === "confermato" && isAdmin && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("button", {
     className: "btn accent sm",
     onClick: () => advance(o)
-  }, "Spedisci")))), list.length === 0 && /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("td", {
+  }, "Spedisci"), " "), isAdmin && /*#__PURE__*/React.createElement("button", {
+    className: "btn danger sm",
+    onClick: () => {
+      setDelErr("");
+      setDel(o);
+    }
+  }, "Elimina")))), list.length === 0 && /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("td", {
     colSpan: 9,
     className: "empty-state"
   }, "Ancora nessun ordine."))))), edit && /*#__PURE__*/React.createElement(OrderEditor, {
@@ -2382,7 +2417,29 @@ function Orders({
     order: send,
     db: db,
     onClose: () => setSend(null)
-  }));
+  }), del && /*#__PURE__*/React.createElement(Modal, {
+    title: "Elimina ordine #" + del.number,
+    sub: "Operazione definitiva",
+    onClose: () => {
+      if (!delBusy) setDel(null);
+    },
+    foot: /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("button", {
+      className: "btn light",
+      disabled: delBusy,
+      onClick: () => setDel(null)
+    }, "Annulla"), /*#__PURE__*/React.createElement("button", {
+      className: "btn danger",
+      disabled: delBusy,
+      onClick: doDelete
+    }, delBusy ? "Eliminazione…" : "Elimina definitivamente"))
+  }, /*#__PURE__*/React.createElement("p", null, "Stai per eliminare l'ordine ", /*#__PURE__*/React.createElement("strong", null, "#", del.number), " di ", /*#__PURE__*/React.createElement("strong", null, clientName(del.clientId)), " (agente ", agentName(del.agentId), "), per un valore di ", /*#__PURE__*/React.createElement("strong", null, eur(del.total)), "."), /*#__PURE__*/React.createElement("p", {
+    className: "sub"
+  }, "L'ordine e tutte le sue righe verranno cancellati dal database. L'operazione non è reversibile e il numero d'ordine non verrà riutilizzato."), delErr && /*#__PURE__*/React.createElement("p", {
+    style: {
+      color: "var(--danger)",
+      fontWeight: 600
+    }
+  }, delErr)));
 }
 function OrderEditor({
   order,
