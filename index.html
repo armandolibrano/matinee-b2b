@@ -601,6 +601,37 @@ const SB = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   }
 });
 const N = x => x == null ? null : Number(x);
+/* ---------- ordinamento taglie: XS < S < M < L < XL < XXL ---------- */
+const SIZE_ORDER = {
+  "xxs": 1,
+  "xs": 2,
+  "s": 3,
+  "m": 4,
+  "l": 5,
+  "xl": 6,
+  "xxl": 7,
+  "2xl": 7,
+  "xxxl": 8,
+  "3xl": 8,
+  "tu": 9,
+  "unica": 9,
+  "u": 9
+};
+function sizeRank(s) {
+  const k = String(s || "").trim().toLowerCase();
+  if (!k || k === "-") return 900;
+  if (SIZE_ORDER[k] != null) return SIZE_ORDER[k];
+  const num = parseFloat(k.replace(",", "."));
+  if (!isNaN(num)) return 100 + num; /* taglie numeriche: 38, 40, 42... */
+  return 800; /* qualsiasi altra etichetta, in fondo ma prima di "-" */
+}
+function cmpVariant(a, b) {
+  const c = String(a.color || "").localeCompare(String(b.color || ""), "it");
+  if (c !== 0) return c;
+  const r = sizeRank(a.size) - sizeRank(b.size);
+  if (r !== 0) return r;
+  return String(a.size || "").localeCompare(String(b.size || ""), "it");
+}
 async function fetchAll(table) {
   let out = [],
     from = 0,
@@ -688,6 +719,7 @@ async function loadAll() {
       price: N(l.price) || 0
     });
   });
+  Object.values(pById).forEach(p => p.variants.sort(cmpVariant));
   return {
     users: users.map(u => ({
       id: u.id,
@@ -1992,25 +2024,65 @@ function orderVIndex(db) {
   }));
   return m;
 }
+/* Righe ordinate come il catalogo: prodotto, colore, taglia (XS→XXL). */
+function orderLinesSorted(order, vI) {
+  return order.lines.slice().sort((a, b) => {
+    const va = vI[a.variantId] || {},
+      vb = vI[b.variantId] || {};
+    const c = String(va.productName || "").localeCompare(String(vb.productName || ""), "it");
+    return c !== 0 ? c : cmpVariant(va, vb);
+  });
+}
+/* Danea Easyfatt: il codice articolo non contiene il colore.
+   Alcuni prodotti hanno il colore nel nome (es. "EM2152 nero" con variante senza colore):
+   in quel caso il nome va spezzato in codice + colore. Taglia e colore in MAIUSCOLO. */
+const PROVVIGIONE_DEFAULT = 12,
+  IVA_DEFAULT = "22";
+function daneaVar(v) {
+  let code = String(v.productName || "").trim(),
+    col = String(v.color || "").trim();
+  if (!col || col === "-") {
+    const i = code.indexOf(" ");
+    if (i > 0) {
+      col = code.slice(i + 1).trim();
+      code = code.slice(0, i).trim();
+    } else col = "";
+  }
+  if (col === "-") col = "";
+  let size = String(v.size || "").trim();
+  if (size === "-") size = "";
+  return {
+    code: code,
+    col: col.toUpperCase(),
+    size: size.toUpperCase()
+  };
+}
 function exportOrderGestionaleXLSX(order, db) {
   if (!window.XLSX) {
     alert("Modulo Excel non caricato, riprova tra un istante.");
     return;
   }
   const vI = orderVIndex(db);
-  const header = ["Cod.", "Descrizione", "Taglia/Colore", "Q.tà", "Prezzo netto", "U.m.", "Taglia", "Colore", "EAN"];
-  const data = order.lines.map(l => {
-    const v = vI[l.variantId] || {};
+  const header = ["Cod.", "Descrizione", "Taglia/Colore", "Q.tà", "Q.tà consegnata", "Prezzo netto", "U.m.", "Sconti", "% Provv.", "Iva", "Importo"];
+  const data = orderLinesSorted(order, vI).map(l => {
+    const v = vI[l.variantId] || {},
+      d = daneaVar(v);
+    const tc = [d.size, d.col].filter(Boolean).join("/");
+    const attr = [d.size, d.col].filter(Boolean).join(", ");
+    const desc = [String(v.productCategory || d.code).toUpperCase(), attr].filter(Boolean).join(" - ");
+    const prezzo = Number(l.price) || 0;
     return {
-      "Cod.": v.productName || "",
-      "Descrizione": v.productCategory || "",
-      "Taglia/Colore": (v.size || "") + "/" + (v.color || ""),
+      "Cod.": d.code,
+      "Descrizione": desc,
+      "Taglia/Colore": tc,
       "Q.tà": l.qty,
-      "Prezzo netto": l.price,
+      "Q.tà consegnata": l.qty,
+      "Prezzo netto": prezzo,
       "U.m.": "pz",
-      "Taglia": v.size || "",
-      "Colore": v.color || "",
-      "EAN": v.ean || v.barcode || ""
+      "Sconti": "",
+      "% Provv.": PROVVIGIONE_DEFAULT,
+      "Iva": IVA_DEFAULT,
+      "Importo": Math.round(l.qty * prezzo * 100) / 100
     };
   });
   const ws = XLSX.utils.json_to_sheet(data, {
@@ -2019,11 +2091,13 @@ function exportOrderGestionaleXLSX(order, db) {
   ws["!cols"] = [{
     wch: 12
   }, {
-    wch: 20
+    wch: 34
   }, {
     wch: 16
   }, {
     wch: 7
+  }, {
+    wch: 14
   }, {
     wch: 12
   }, {
@@ -2031,10 +2105,19 @@ function exportOrderGestionaleXLSX(order, db) {
   }, {
     wch: 8
   }, {
-    wch: 12
+    wch: 9
   }, {
-    wch: 16
+    wch: 6
+  }, {
+    wch: 12
   }];
+  /* formato valuta su Prezzo netto (F) e Importo (K), come nel file di esempio Danea */
+  for (let i = 0; i < data.length; i++) {
+    ["F", "K"].forEach(col => {
+      const ref = col + (i + 2);
+      if (ws[ref]) ws[ref].z = '"€"\\ #,##0.00##';
+    });
+  }
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "Righe documento");
   XLSX.writeFile(wb, "Ordine_" + order.number + "_gestionale.xlsx");
@@ -2043,7 +2126,7 @@ function buildEmailBody(order, db) {
   const vI = orderVIndex(db);
   const c = db.clients.find(x => x.id === order.clientId) || {};
   const a = db.users.find(x => x.id === order.agentId) || {};
-  const rows = order.lines.map(l => {
+  const rows = orderLinesSorted(order, vI).map(l => {
     const v = vI[l.variantId] || {};
     return `- ${v.productName || "?"} | ${v.color || ""} ${v.size || ""} | q.tà ${l.qty} | ${eur(l.price)} | ${eur(l.qty * l.price)}`;
   }).join("\n");
@@ -2109,7 +2192,7 @@ function genOrderPDF(order, db) {
   const ag = [a.name, a.zone && "Zona " + a.zone].filter(Boolean);
   ag.forEach((t, i) => doc.text(String(t), W / 2, yc + i * 13));
   y = yc + Math.max(cl.length, ag.length) * 13 + 12;
-  const body = order.lines.map(l => {
+  const body = orderLinesSorted(order, vI).map(l => {
     const v = vI[l.variantId] || {};
     return [v.productName || "—", (v.color || "") + " · " + (v.size || ""), v.sku || "", String(l.qty), eur(l.price), v.retail ? eur(v.retail) : "—", eur(l.qty * l.price)];
   });
