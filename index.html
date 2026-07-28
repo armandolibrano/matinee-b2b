@@ -2019,6 +2019,7 @@ function orderVIndex(db) {
   const m = {};
   db.products.forEach(p => p.variants.forEach(v => m[v.id] = {
     ...v,
+    productId: p.id,
     productName: p.name,
     productCategory: p.category
   }));
@@ -2555,6 +2556,36 @@ function OrderEditor({
     qty: Math.max(0, qty)
   } : l).filter(l => l.qty > 0));
   const total = lines.reduce((s, l) => s + l.qty * l.price, 0);
+  /* ---- aggiunta articoli in modifica ordine ---- */
+  const [addQ, setAddQ] = useState("");
+  const addLine = (v, n) => setLines(ls => {
+    const ex = ls.find(l => l.variantId === v.id);
+    if (ex) return ls.map(l => l.variantId === v.id ? {
+      ...l,
+      qty: l.qty + (n || 1)
+    } : l);
+    return [...ls, {
+      variantId: v.id,
+      productId: v.productId,
+      qty: n || 1,
+      price: N(v.b2b) || 0
+    }];
+  });
+  const addResults = useMemo(() => {
+    const s = addQ.trim().toLowerCase();
+    if (s.length < 2) return [];
+    return db.products.filter(p => (p.name || "").toLowerCase().includes(s) || (p.category || "").toLowerCase().includes(s) || p.variants.some(v => (v.sku || "").toLowerCase().includes(s) || (v.barcode || "").toLowerCase().includes(s))).slice(0, 6);
+  }, [addQ, db.products]);
+  const inCart = vid => {
+    const l = lines.find(x => x.variantId === vid);
+    return l ? l.qty : 0;
+  };
+  const sortedLines = useMemo(() => lines.slice().sort((a, b) => {
+    const va = vI[a.variantId] || {},
+      vb = vI[b.variantId] || {};
+    const c = String(va.productName || "").localeCompare(String(vb.productName || ""), "it");
+    return c !== 0 ? c : cmpVariant(va, vb);
+  }), [lines, vI]);
   const effPayment = payment === ALTRO ? customPayment.trim() : payment;
   const effDelivery = delivery === ALTRO ? customDelivery.trim() : delivery;
   const canSave = clientId && lines.length > 0 && effPayment && effDelivery;
@@ -2648,7 +2679,7 @@ function OrderEditor({
     style: {
       margin: "6px 0"
     }
-  }, /*#__PURE__*/React.createElement("strong", null, "Articoli")), /*#__PURE__*/React.createElement("table", null, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("th", null, "Articolo"), /*#__PURE__*/React.createElement("th", null, "Variante"), /*#__PURE__*/React.createElement("th", null, "Prezzo"), /*#__PURE__*/React.createElement("th", null, "Q.tà"), /*#__PURE__*/React.createElement("th", null, "Subtotale"), /*#__PURE__*/React.createElement("th", null))), /*#__PURE__*/React.createElement("tbody", null, lines.map(l => {
+  }, /*#__PURE__*/React.createElement("strong", null, "Articoli")), /*#__PURE__*/React.createElement("table", null, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("th", null, "Articolo"), /*#__PURE__*/React.createElement("th", null, "Variante"), /*#__PURE__*/React.createElement("th", null, "Prezzo"), /*#__PURE__*/React.createElement("th", null, "Q.tà"), /*#__PURE__*/React.createElement("th", null, "Subtotale"), /*#__PURE__*/React.createElement("th", null))), /*#__PURE__*/React.createElement("tbody", null, sortedLines.map(l => {
     const v = vI[l.variantId] || {};
     return /*#__PURE__*/React.createElement("tr", {
       key: l.variantId
@@ -2676,7 +2707,80 @@ function OrderEditor({
   }), lines.length === 0 && /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("td", {
     colSpan: 6,
     className: "tag-small"
-  }, "Nessun articolo. Aggiungi capi dal carrello creando un nuovo ordine.")))), /*#__PURE__*/React.createElement(Field, {
+  }, "Nessun articolo. Cerca qui sotto i capi da aggiungere.")))), /*#__PURE__*/React.createElement("div", {
+    className: "panel",
+    style: {
+      marginTop: 12,
+      padding: 12
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 8
+    }
+  }, /*#__PURE__*/React.createElement("strong", null, "Aggiungi articoli"), " ", /*#__PURE__*/React.createElement("span", {
+    className: "tag-small"
+  }, "cerca per nome, categoria o SKU")), /*#__PURE__*/React.createElement("input", {
+    className: "search",
+    style: {
+      width: "100%"
+    },
+    placeholder: "Es. EM2152, bikini, CB8033…",
+    value: addQ,
+    onChange: e => setAddQ(e.target.value)
+  }), addQ.trim().length >= 2 && addResults.length === 0 && /*#__PURE__*/React.createElement("div", {
+    className: "tag-small",
+    style: {
+      marginTop: 8
+    }
+  }, "Nessun prodotto trovato."), addResults.map(p => /*#__PURE__*/React.createElement("div", {
+    key: p.id,
+    style: {
+      marginTop: 10,
+      paddingTop: 8,
+      borderTop: "1px solid var(--line)"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontWeight: 600
+    }
+  }, p.name, " ", /*#__PURE__*/React.createElement("span", {
+    className: "tag-small"
+  }, p.category)), /*#__PURE__*/React.createElement("div", {
+    className: "vlist"
+  }, p.variants.map(v => /*#__PURE__*/React.createElement("div", {
+    className: "vitem",
+    key: v.id
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "vinfo"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "p"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "chip dot"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "swatch",
+    style: {
+      background: swatch(v.color)
+    }
+  }), v.color, " · ", v.size)), /*#__PURE__*/React.createElement("div", {
+    className: "tag-small",
+    style: {
+      marginTop: 2
+    }
+  }, eur(v.b2b), " B2B · scorte ", v.stock)), /*#__PURE__*/React.createElement("div", {
+    className: "addqty"
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => setQty(v.id, inCart(v.id) - 1),
+    disabled: !inCart(v.id)
+  }, "−"), /*#__PURE__*/React.createElement("span", {
+    className: "n"
+  }, inCart(v.id)), /*#__PURE__*/React.createElement("button", {
+    onClick: () => addLine({
+      ...v,
+      productId: p.id
+    }, 1)
+  }, "+")))), p.variants.length === 0 && /*#__PURE__*/React.createElement("div", {
+    className: "tag-small"
+  }, "Nessuna variante."))))), /*#__PURE__*/React.createElement(Field, {
     label: "Note ordine"
   }, /*#__PURE__*/React.createElement("textarea", {
     rows: 2,
