@@ -724,7 +724,7 @@ async function loadAll() {
     users: users.map(u => ({
       id: u.id,
       username: u.username,
-      password: u.password,
+      password: "",
       role: u.role,
       name: u.name,
       zone: u.zone || '',
@@ -803,7 +803,7 @@ async function dbSaveUser(u) {
   await chk(await SB.from('app_users').upsert({
     id: u.id,
     username: u.username,
-    password: u.password,
+    password: '',
     role: u.role,
     name: u.name,
     zone: u.zone || ''
@@ -852,7 +852,15 @@ const eur = n => n == null || isNaN(n) ? "—" : new Intl.NumberFormat("it-IT", 
   currency: "EUR"
 }).format(n);
 let _c = 0;
-const uid = p => p + "_" + (_c++).toString(36);
+const uid = p => p + "_" + Date.now().toString(36) + (_c++).toString(36) + Math.random().toString(36).slice(2, 7);
+/* id garantito unico anche rispetto ai record gia' presenti nel database */
+const uidNew = (p, arr) => {
+  let id = uid(p),
+    g = 0;
+  const has = x => (arr || []).some(o => o && o.id === x);
+  while (has(id) && g++ < 50) id = uid(p);
+  return id;
+};
 const COLOR_HEX = {
   nero: "#141414",
   panna: "#efe9dc",
@@ -1027,7 +1035,7 @@ function Catalog({
   const [editing, setEditing] = useState(null);
   const [q, setQ] = useState("");
   const addProduct = () => setEditing({
-    id: uid("p"),
+    id: uidNew("p", db.products),
     name: "",
     category: "",
     sku: "",
@@ -1135,7 +1143,7 @@ function ProductEditor({
   })));
   const fileRefs = useRef({});
   const addVariant = () => setVariants(vs => [...vs, {
-    id: uid("v"),
+    id: uidNew("v", vs),
     size: "",
     color: "",
     sku: sku,
@@ -1479,7 +1487,7 @@ function AgentCart({
     }
     const ship = ships.find(s => s.id === shipId) || ships[0];
     const order = {
-      id: uid("o"),
+      id: uidNew("o", db.orders),
       number,
       agentId: session.id,
       clientId,
@@ -1670,7 +1678,7 @@ function Clients({
   }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("h1", null, isSup ? "Clienti" : "I miei clienti"), /*#__PURE__*/React.createElement("p", null, visible.length, " clienti", isSup ? " (tutti gli agenti)" : " — zona " + session.zone)), !isDir && /*#__PURE__*/React.createElement("button", {
     className: "btn",
     onClick: () => setEditing({
-      id: uid("c"),
+      id: uidNew("c", db.clients),
       name: "",
       piva: "",
       sdi: "",
@@ -1733,7 +1741,7 @@ function ClientEditor({
   const addShip = () => setF(s => ({
     ...s,
     shipping: [...(s.shipping || []), {
-      id: uid("s"),
+      id: uidNew("s", s.shipping),
       label: "",
       address: ""
     }]
@@ -1893,20 +1901,23 @@ function Agents({
         setEditing(null);
         return;
       }
-      const prev = db.users.find(x => x.id === a.id);
-      if (prev && prev.password !== a.password) {
+      if ((a.password || "").trim()) {
         const r = await SB.rpc('admin_set_password', {
           p_username: a.username,
-          p_password: a.password
+          p_password: a.password.trim()
         });
         if (r.error) throw new Error(r.error.message);
       }
-      await dbSaveUser(a);
+      const u = {
+        ...a,
+        password: ""
+      };
+      await dbSaveUser(u);
       setDb(d => ({
         ...d,
-        users: d.users.map(x => x.id === a.id ? {
+        users: d.users.map(x => x.id === u.id ? {
           ...x,
-          ...a
+          ...u
         } : x)
       }));
       setEditing(null);
@@ -1920,7 +1931,7 @@ function Agents({
   }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("h1", null, "Agenti"), /*#__PURE__*/React.createElement("p", null, agents.length, " agenti attivi")), !readOnly && /*#__PURE__*/React.createElement("button", {
     className: "btn",
     onClick: () => setEditing({
-      id: uid("u"),
+      id: uidNew("u", db.users),
       username: "",
       password: "",
       role: "agent",
@@ -1958,7 +1969,8 @@ function AgentEditor({
   onSave
 }) {
   const [f, setF] = useState({
-    ...agent
+    ...agent,
+    password: ""
   });
   const set = (k, v) => setF(s => ({
     ...s,
@@ -1972,7 +1984,7 @@ function AgentEditor({
       onClick: onClose
     }, "Annulla"), /*#__PURE__*/React.createElement("button", {
       className: "btn",
-      disabled: !f.name.trim() || !f.username.trim() || !f.password,
+      disabled: !f.name.trim() || !f.username.trim() || agent._new && !f.password,
       onClick: () => onSave({
         ...f,
         name: f.name.trim(),
@@ -2005,13 +2017,14 @@ function AgentEditor({
     label: "Password"
   }, /*#__PURE__*/React.createElement("input", {
     value: f.password,
-    onChange: e => set("password", e.target.value)
+    onChange: e => set("password", e.target.value),
+    placeholder: agent._new ? "" : "lascia vuoto per non cambiarla"
   }))), /*#__PURE__*/React.createElement("p", {
     className: "hint",
     style: {
       marginTop: -4
     }
-  }, agent._new ? "Username e password servono per entrare nel portale. Lo username non sarà più modificabile dopo il salvataggio." : "Lo username non è modificabile. Cambiando la password qui, l'agente entrerà con quella nuova."));
+  }, agent._new ? "Username e password servono per entrare nel portale. Lo username non sarà più modificabile dopo il salvataggio." : "Lo username non è modificabile. Per motivi di sicurezza la password non è visibile: scrivine una nuova solo se vuoi cambiarla, altrimenti lascia il campo vuoto."));
 }
 
 /* ---------- helper PDF + email ---------- */
