@@ -1418,6 +1418,7 @@ function AgentCatalog({
 const PAYMENTS = ["Bonifico anticipato", "Assegno 30/60/90"];
 const DELIVERIES = ["Febbraio 2027", "Marzo 2027", "Aprile 2027", "Pronto consegna"];
 const ALTRO = "Altro (specifica)";
+const IVA = 0.22;
 const COMPANY = {
   name: "MATINEE",
   legal: "Ocean Style S.r.l. · P.IVA 07715961210",
@@ -2144,7 +2145,11 @@ function buildEmailBody(order, db) {
     const v = vI[l.variantId] || {};
     return `- ${v.productName || "?"} | ${v.color || ""} ${v.size || ""} | q.tà ${l.qty} | ${eur(l.price)} | ${eur(l.qty * l.price)}`;
   }).join("\n");
-  return `Conferma d'ordine ${COMPANY.name} n. ${order.number} del ${order.createdAt}\n\n` + `Cliente: ${c.name || ""}\nP.IVA: ${c.piva || ""}${c.sdi ? " · SDI: " + c.sdi : ""}\nAgente: ${a.name || ""}${a.zone ? " (" + a.zone + ")" : ""}\n\n` + `Articoli:\n${rows}\n\nTotale: ${eur(order.total)}\nPagamento: ${order.payment}\nConsegna: ${order.delivery}\n` + (order.note ? `Note: ${order.note}\n` : "") + `\n${COMPANY.name} — ${COMPANY.addr} — ${COMPANY.email}`;
+  const r2 = x => Math.round(x * 100) / 100;
+  const imp = r2(order.lines.reduce((s, l) => s + l.qty * l.price, 0));
+  const iv = r2(imp * IVA);
+  const tiv = r2(imp + iv);
+  return `Conferma d'ordine ${COMPANY.name} n. ${order.number} del ${order.createdAt}\n\n` + `Cliente: ${c.name || ""}\nP.IVA: ${c.piva || ""}${c.sdi ? " · SDI: " + c.sdi : ""}\nAgente: ${a.name || ""}${a.zone ? " (" + a.zone + ")" : ""}\n\n` + `Articoli:\n${rows}\n\nTotale imponibile: ${eur(imp)}\nTotale IVA ${Math.round(IVA * 100)}%: ${eur(iv)}\nTOTALE IVATO: ${eur(tiv)}\n\nPagamento: ${order.payment}\nConsegna: ${order.delivery}\n` + (order.note ? `Note: ${order.note}\n` : "") + `\n${COMPANY.name} — ${COMPANY.addr} — ${COMPANY.email}`;
 }
 function genOrderPDF(order, db) {
   if (!(window.jspdf && window.jspdf.jsPDF)) {
@@ -2243,13 +2248,42 @@ function genOrderPDF(order, db) {
   });
   y = doc.lastAutoTable.finalY + 16;
   const pieces = order.lines.reduce((s, l) => s + l.qty, 0);
+  const r2 = x => Math.round(x * 100) / 100;
+  const imponibile = r2(order.lines.reduce((s, l) => s + l.qty * l.price, 0));
+  const iva = r2(imponibile * IVA);
+  const ivato = r2(imponibile + iva);
+  const LBL = W - M - 150;
   doc.setFont("helvetica", "bold");
   doc.setFontSize(11);
   doc.text("Totale " + pieces + " pz", M, y);
-  doc.text(eur(order.total), W - M, y, {
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(10);
+  doc.text("Totale imponibile", LBL, y, {
     align: "right"
   });
-  y += 20;
+  doc.text(eur(imponibile), W - M, y, {
+    align: "right"
+  });
+  y += 15;
+  doc.text("Totale IVA " + Math.round(IVA * 100) + "%", LBL, y, {
+    align: "right"
+  });
+  doc.text(eur(iva), W - M, y, {
+    align: "right"
+  });
+  y += 6;
+  doc.setDrawColor(210);
+  doc.line(LBL - 70, y, W - M, y);
+  y += 13;
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(11);
+  doc.text("TOTALE IVATO", LBL, y, {
+    align: "right"
+  });
+  doc.text(eur(ivato), W - M, y, {
+    align: "right"
+  });
+  y += 22;
   doc.setFont("helvetica", "normal");
   doc.setFontSize(9.5);
   doc.text("Pagamento: " + order.payment, M, y);
