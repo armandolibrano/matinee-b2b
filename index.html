@@ -100,7 +100,10 @@
   .pill-tabs button.active{background:var(--ink);color:#fff;border-color:var(--ink)}
   /* agent catalog cards */
   .cat-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px}
-  .pcard{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;display:flex;flex-direction:column}
+  .pcard{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;display:flex;flex-direction:column;position:relative}
+  .bs-ribbon{position:absolute;top:10px;left:10px;z-index:2;background:var(--accent2);color:#fff;font-size:10px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;padding:4px 9px;border-radius:6px;box-shadow:0 1px 5px rgba(0,0,0,.18);pointer-events:none}
+  .rank-n{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;background:#f0eee9;color:#59554f;font-size:11px;font-weight:700}
+  .rank-n.top{background:var(--accent2);color:#fff}
   .pcard .cover{width:100%;aspect-ratio:1/1;object-fit:contain;background:#f3f1ee;display:block;padding:6px}
   .pcard .cover.empty{display:flex;align-items:center;justify-content:center;color:#c7c7c7;font-size:34px}
   .pcard .body{padding:12px 14px}
@@ -1327,6 +1330,43 @@ function ProductEditor({
 }
 
 /* ---------- CATALOGO agente (sfogliabile + carrello) ---------- */
+/* ---------- BEST SELLER (venduto di sempre, per prodotto) ---------- */
+const BEST_N = 20;
+const BEST_LABEL = "★ Best Seller";
+function bestSellerRank(db) {
+  const vI = {};
+  db.products.forEach(p => p.variants.forEach(v => {
+    vI[v.id] = {
+      p,
+      v
+    };
+  }));
+  const m = {};
+  db.orders.forEach(o => o.lines.forEach(l => {
+    const r = vI[l.variantId];
+    if (!r) return;
+    const k = r.p.id;
+    if (!m[k]) m[k] = {
+      id: k,
+      name: r.p.name,
+      category: r.p.category || "",
+      qty: 0,
+      val: 0,
+      colors: {}
+    };
+    m[k].qty += l.qty;
+    m[k].val += l.qty * l.price;
+    const col = r.v.color || "—";
+    m[k].colors[col] = (m[k].colors[col] || 0) + l.qty;
+  }));
+  return Object.values(m).map(x => ({
+    ...x,
+    topColors: Object.entries(x.colors).sort((a, b) => b[1] - a[1])
+  })).sort((a, b) => b.qty - a.qty || b.val - a.val).slice(0, BEST_N).map((x, i) => ({
+    ...x,
+    rank: i + 1
+  }));
+}
 function AgentCatalog({
   db,
   cart,
@@ -1335,7 +1375,15 @@ function AgentCatalog({
 }) {
   const [q, setQ] = useState("");
   const [cat, setCat] = useState("Tutti");
-  const cats = useMemo(() => ["Tutti", ...Array.from(new Set(db.products.map(p => p.category).filter(Boolean)))], [db.products]);
+  const best = useMemo(() => bestSellerRank(db), [db.products, db.orders]);
+  const bestRank = useMemo(() => {
+    const m = {};
+    best.forEach(b => {
+      m[b.id] = b.rank;
+    });
+    return m;
+  }, [best]);
+  const cats = useMemo(() => ["Tutti", ...(best.length ? [BEST_LABEL] : []), ...Array.from(new Set(db.products.map(p => p.category).filter(Boolean)))], [db.products, best]);
   const setQty = (vid, qty) => setCart(c => {
     const n = {
       ...c
@@ -1343,7 +1391,14 @@ function AgentCatalog({
     if (qty <= 0) delete n[vid];else n[vid] = qty;
     return n;
   });
-  const list = db.products.filter(p => (cat === "Tutti" || p.category === cat) && (p.name.toLowerCase().includes(q.toLowerCase()) || p.variants.some(v => (v.sku || "").toLowerCase().includes(q.toLowerCase())))).slice(0, 60);
+  const list = useMemo(() => {
+    const ql = q.toLowerCase();
+    const match = p => p.name.toLowerCase().includes(ql) || p.variants.some(v => (v.sku || "").toLowerCase().includes(ql));
+    if (cat === BEST_LABEL) {
+      return best.map(b => db.products.find(p => p.id === b.id)).filter(p => p && match(p));
+    }
+    return db.products.filter(p => (cat === "Tutti" || p.category === cat) && match(p)).slice(0, 60);
+  }, [db.products, q, cat, best]);
   return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
     className: "page-h"
   }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("h1", null, "Catalogo"), /*#__PURE__*/React.createElement("p", null, "Sfoglia e aggiungi al carrello · ", db.products.length, " prodotti"))), /*#__PURE__*/React.createElement("div", {
@@ -1355,16 +1410,23 @@ function AgentCatalog({
     onChange: e => setQ(e.target.value)
   }), /*#__PURE__*/React.createElement("div", {
     className: "pill-tabs"
-  }, cats.slice(0, 8).map(c => /*#__PURE__*/React.createElement("button", {
+  }, cats.slice(0, 10).map(c => /*#__PURE__*/React.createElement("button", {
     key: c,
     className: cat === c ? "active" : "",
     onClick: () => setCat(c)
-  }, c)))), /*#__PURE__*/React.createElement("div", {
+  }, c)))), cat === BEST_LABEL && /*#__PURE__*/React.createElement("p", {
+    className: "tag-small",
+    style: {
+      marginBottom: 10
+    }
+  }, "I ", best.length, " prodotti più venduti di sempre, in ordine di pezzi venduti."), /*#__PURE__*/React.createElement("div", {
     className: "cat-grid"
   }, list.map(p => /*#__PURE__*/React.createElement("div", {
     className: "pcard",
     key: p.id
-  }, /*#__PURE__*/React.createElement(Img, {
+  }, bestRank[p.id] && /*#__PURE__*/React.createElement("span", {
+    className: "bs-ribbon"
+  }, "★ Best Seller · ", bestRank[p.id], "º"), /*#__PURE__*/React.createElement(Img, {
     src: p.variants[0] && p.variants[0].photo,
     cls: "cover",
     fallback: "▢",
@@ -2876,6 +2938,7 @@ function Dashboard({
   orders.forEach(o => {
     byStatus[o.status] = (byStatus[o.status] || 0) + 1;
   });
+  const best = useMemo(() => bestSellerRank(db), [db.products, db.orders]);
   const Bars = ({
     data
   }) => {
@@ -2976,7 +3039,69 @@ function Dashboard({
     }
   }, /*#__PURE__*/React.createElement("span", {
     className: "status spedito"
-  }, "spedito"), /*#__PURE__*/React.createElement("strong", null, byStatus.spedito || 0))))));
+  }, "spedito"), /*#__PURE__*/React.createElement("strong", null, byStatus.spedito || 0))))), /*#__PURE__*/React.createElement("div", {
+    className: "panel",
+    style: {
+      marginTop: 18,
+      padding: 0
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "14px 16px 4px"
+    }
+  }, /*#__PURE__*/React.createElement("strong", null, "Top ", best.length, " prodotti più venduti (di sempre)"), /*#__PURE__*/React.createElement("p", {
+    className: "tag-small",
+    style: {
+      marginTop: 2
+    }
+  }, "Somma di tutte le taglie, su tutti gli ordini. Sono gli stessi prodotti che gli agenti vedono con l'etichetta “Best Seller” a catalogo.")), /*#__PURE__*/React.createElement("table", null, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("th", {
+    style: {
+      width: 44
+    }
+  }, "#"), /*#__PURE__*/React.createElement("th", null, "Prodotto"), /*#__PURE__*/React.createElement("th", null, "Colori più venduti"), /*#__PURE__*/React.createElement("th", {
+    style: {
+      textAlign: "right"
+    }
+  }, "Pezzi"), /*#__PURE__*/React.createElement("th", {
+    style: {
+      textAlign: "right"
+    }
+  }, "Valore"))), /*#__PURE__*/React.createElement("tbody", null, best.map(b => /*#__PURE__*/React.createElement("tr", {
+    key: b.id
+  }, /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("span", {
+    className: "rank-n" + (b.rank <= 3 ? " top" : "")
+  }, b.rank)), /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("strong", {
+    style: {
+      fontWeight: 600
+    }
+  }, b.name), b.category ? /*#__PURE__*/React.createElement("div", {
+    className: "tag-small"
+  }, b.category) : null), /*#__PURE__*/React.createElement("td", null, b.topColors.slice(0, 3).map(([c, n]) => /*#__PURE__*/React.createElement("span", {
+    className: "chip dot",
+    key: c,
+    style: {
+      marginRight: 5
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "swatch",
+    style: {
+      background: swatch(c)
+    }
+  }), c, " · ", n))), /*#__PURE__*/React.createElement("td", {
+    style: {
+      textAlign: "right",
+      fontWeight: 700
+    }
+  }, b.qty), /*#__PURE__*/React.createElement("td", {
+    style: {
+      textAlign: "right"
+    }
+  }, eur(b.val)))))), best.length === 0 && /*#__PURE__*/React.createElement("p", {
+    className: "tag-small",
+    style: {
+      padding: 14
+    }
+  }, "Nessun venduto registrato.")));
 }
 
 /* ---------- SCORTE (admin) ---------- */
@@ -3028,7 +3153,8 @@ function exportStockXLSX(rows, onlyNeg) {
 }
 function Stock({
   db,
-  setDb
+  setDb,
+  readOnly
 }) {
   const [q, setQ] = useState("");
   const [onlyNeg, setOnlyNeg] = useState(false);
@@ -3062,7 +3188,7 @@ function Stock({
   }) => (!onlyNeg || v.stock < 0) && (p.name.toLowerCase().includes(q.toLowerCase()) || (v.sku || "").toLowerCase().includes(q.toLowerCase())));
   return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
     className: "page-h"
-  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("h1", null, "Scorte"), /*#__PURE__*/React.createElement("p", null, rows.length, " varianti · ", negRows.length, " sotto zero da riordinare")), /*#__PURE__*/React.createElement("button", {
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("h1", null, "Scorte"), /*#__PURE__*/React.createElement("p", null, rows.length, " varianti · ", negRows.length, " sotto zero da riordinare", readOnly ? " · sola lettura" : "")), /*#__PURE__*/React.createElement("button", {
     className: "btn",
     onClick: () => exportStockXLSX(filtered, onlyNeg)
   }, "⬇ Esporta Excel")), /*#__PURE__*/React.createElement("div", {
@@ -3113,7 +3239,12 @@ function Stock({
     }
   }), v.color, " · ", v.size)), /*#__PURE__*/React.createElement("td", {
     className: "tag-small"
-  }, v.sku), /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("input", {
+  }, v.sku), /*#__PURE__*/React.createElement("td", null, readOnly ? /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontWeight: v.stock < 0 ? 700 : 400,
+      color: v.stock < 0 ? "var(--danger)" : "inherit"
+    }
+  }, v.stock) : /*#__PURE__*/React.createElement("input", {
     type: "number",
     value: v.stock,
     onChange: e => setStock(p.id, v.id, parseInt(e.target.value) || 0),
@@ -3243,7 +3374,7 @@ function App() {
   const isAgent = session.role === "agent";
   const roleLabel = isAdmin ? "Amministrazione" : isDir ? "Direttore commerciale" : "Agente · " + session.zone;
   const cartCount = Object.values(cart).reduce((s, n) => s + n, 0);
-  const nav = isAdmin ? [["dashboard", "Dashboard"], ["catalogo", "Catalogo"], ["scorte", "Scorte"], ["ordini", "Ordini"], ["clienti", "Clienti"], ["agenti", "Agenti"]] : isDir ? [["dashboard", "Dashboard"], ["ordini", "Ordini agenti"], ["agenti", "Agenti"], ["clienti", "Clienti"], ["catalogo", "Catalogo"]] : [["catalogo", "Catalogo"], ["carrello", "Carrello"], ["ordini", "I miei ordini"], ["clienti", "I miei clienti"]];
+  const nav = isAdmin ? [["dashboard", "Dashboard"], ["catalogo", "Catalogo"], ["scorte", "Scorte"], ["ordini", "Ordini"], ["clienti", "Clienti"], ["agenti", "Agenti"]] : isDir ? [["dashboard", "Dashboard"], ["ordini", "Ordini agenti"], ["scorte", "Scorte"], ["agenti", "Agenti"], ["clienti", "Clienti"], ["catalogo", "Catalogo"]] : [["catalogo", "Catalogo"], ["carrello", "Carrello"], ["ordini", "I miei ordini"], ["clienti", "I miei clienti"]];
   return /*#__PURE__*/React.createElement("div", {
     className: "app"
   }, /*#__PURE__*/React.createElement("div", {
@@ -3277,9 +3408,10 @@ function App() {
     className: "main"
   }, tab === "dashboard" && (isAdmin || isDir) && /*#__PURE__*/React.createElement(Dashboard, {
     db: db
-  }), tab === "scorte" && isAdmin && /*#__PURE__*/React.createElement(Stock, {
+  }), tab === "scorte" && (isAdmin || isDir) && /*#__PURE__*/React.createElement(Stock, {
     db: db,
-    setDb: setDb
+    setDb: setDb,
+    readOnly: isDir
   }), tab === "catalogo" && (isAgent ? /*#__PURE__*/React.createElement(AgentCatalog, {
     db: db,
     cart: cart,
