@@ -104,10 +104,19 @@
   .bs-ribbon{position:absolute;top:10px;left:10px;z-index:2;background:var(--accent2);color:#fff;font-size:10px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;padding:4px 9px;border-radius:6px;box-shadow:0 1px 5px rgba(0,0,0,.18);pointer-events:none}
   .rank-n{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;background:#f0eee9;color:#59554f;font-size:11px;font-weight:700}
   .rank-n.top{background:var(--accent2);color:#fff}
+  .pcard.closed .cover{aspect-ratio:auto;height:170px}
   .pcard .cover{width:100%;aspect-ratio:1/1;object-fit:contain;background:#f3f1ee;display:block;padding:6px}
   .pcard .cover.empty{display:flex;align-items:center;justify-content:center;color:#c7c7c7;font-size:34px}
   .pcard .body{padding:12px 14px}
   .pcard .pname{font-weight:600;font-size:14.5px}
+  .psum{margin-top:10px;display:flex;align-items:center;justify-content:space-between;gap:10px;cursor:pointer}
+  .psum-l{min-width:0}
+  .psum-r{display:flex;align-items:center;gap:7px;flex-shrink:0}
+  .swatch-row{display:flex;align-items:center;gap:4px;margin-bottom:3px}
+  .swatch-row .swatch{width:13px;height:13px}
+  .btn-open{border:1px solid var(--line);background:#fff;border-radius:8px;padding:6px 11px;font-size:12px;font-weight:600;white-space:nowrap}
+  .btn-open:hover{background:#f6f4f1}
+  .cart-badge{background:var(--accent2);color:#fff;font-size:11px;font-weight:700;padding:3px 8px;border-radius:20px;white-space:nowrap}
   .pcard .vlist{margin-top:10px;display:flex;flex-direction:column;gap:2px}
   .vitem{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 0;border-top:1px solid var(--line)}
   .vitem:first-child{border-top:none}
@@ -1384,6 +1393,11 @@ function AgentCatalog({
     return m;
   }, [best]);
   const cats = useMemo(() => ["Tutti", ...(best.length ? [BEST_LABEL] : []), ...Array.from(new Set(db.products.map(p => p.category).filter(Boolean)))], [db.products, best]);
+  const [open, setOpen] = useState({});
+  const toggle = pid => setOpen(o => ({
+    ...o,
+    [pid]: !o[pid]
+  }));
   const setQty = (vid, qty) => setCart(c => {
     const n = {
       ...c
@@ -1414,7 +1428,17 @@ function AgentCatalog({
     key: c,
     className: cat === c ? "active" : "",
     onClick: () => setCat(c)
-  }, c)))), cat === BEST_LABEL && /*#__PURE__*/React.createElement("p", {
+  }, c))), /*#__PURE__*/React.createElement("button", {
+    className: "btn",
+    onClick: () => {
+      const anyOpen = list.some(p => open[p.id]);
+      const n = {};
+      if (!anyOpen) list.forEach(p => {
+        n[p.id] = true;
+      });
+      setOpen(n);
+    }
+  }, list.some(p => open[p.id]) ? "Chiudi tutte" : "Apri tutte")), cat === BEST_LABEL && /*#__PURE__*/React.createElement("p", {
     className: "tag-small",
     style: {
       marginBottom: 10
@@ -1422,7 +1446,7 @@ function AgentCatalog({
   }, "I ", best.length, " prodotti più venduti di sempre, in ordine di pezzi venduti."), /*#__PURE__*/React.createElement("div", {
     className: "cat-grid"
   }, list.map(p => /*#__PURE__*/React.createElement("div", {
-    className: "pcard",
+    className: "pcard" + (open[p.id] ? "" : " closed"),
     key: p.id
   }, bestRank[p.id] && /*#__PURE__*/React.createElement("span", {
     className: "bs-ribbon"
@@ -1440,7 +1464,43 @@ function AgentCatalog({
     className: "pname"
   }, p.name), /*#__PURE__*/React.createElement("div", {
     className: "tag-small"
-  }, p.category), /*#__PURE__*/React.createElement("div", {
+  }, p.category), (() => {
+    const cols = Array.from(new Set(p.variants.map(v => v.color).filter(Boolean)));
+    const szs = Array.from(new Set(p.variants.map(v => v.size).filter(Boolean)));
+    const prices = p.variants.map(v => v.b2b || 0).filter(x => x > 0);
+    const pmin = prices.length ? Math.min(...prices) : 0,
+      pmax = prices.length ? Math.max(...prices) : 0;
+    const inCart = p.variants.reduce((s, v) => s + (cart[v.id] || 0), 0);
+    return /*#__PURE__*/React.createElement("div", {
+      className: "psum",
+      onClick: () => toggle(p.id)
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "psum-l"
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "swatch-row"
+    }, cols.slice(0, 6).map(c => /*#__PURE__*/React.createElement("span", {
+      className: "swatch",
+      key: c,
+      title: c,
+      style: {
+        background: swatch(c)
+      }
+    })), cols.length > 6 ? /*#__PURE__*/React.createElement("span", {
+      className: "tag-small"
+    }, "+", cols.length - 6) : null), /*#__PURE__*/React.createElement("div", {
+      className: "tag-small"
+    }, cols.length, " color", cols.length === 1 ? "e" : "i", " · ", szs.length, " taglie · ", pmin === pmax ? eur(pmin) : "da " + eur(pmin), " B2B")), /*#__PURE__*/React.createElement("div", {
+      className: "psum-r"
+    }, inCart > 0 && /*#__PURE__*/React.createElement("span", {
+      className: "cart-badge"
+    }, inCart, " pz"), /*#__PURE__*/React.createElement("button", {
+      className: "btn-open",
+      onClick: e => {
+        e.stopPropagation();
+        toggle(p.id);
+      }
+    }, open[p.id] ? "Chiudi ▴" : "Ordina ▾")));
+  })(), open[p.id] && /*#__PURE__*/React.createElement("div", {
     className: "vlist"
   }, p.variants.map(v => /*#__PURE__*/React.createElement("div", {
     className: "vitem",
@@ -3105,11 +3165,20 @@ function Dashboard({
 }
 
 /* ---------- SCORTE (admin) ---------- */
-function exportStockXLSX(rows, onlyNeg) {
+/* pezzi venduti per variante, su tutti gli ordini */
+function soldByVariant(db) {
+  const m = {};
+  db.orders.forEach(o => o.lines.forEach(l => {
+    m[l.variantId] = (m[l.variantId] || 0) + l.qty;
+  }));
+  return m;
+}
+function exportStockXLSX(rows, onlyNeg, sold) {
   if (!window.XLSX) {
     alert("Modulo Excel non caricato, riprova tra un istante.");
     return;
   }
+  const S = sold || {};
   const data = rows.map(({
     p,
     v
@@ -3119,6 +3188,7 @@ function exportStockXLSX(rows, onlyNeg) {
     Colore: v.color,
     Taglia: v.size,
     SKU: v.sku || "",
+    "Venduto (pz)": S[v.id] || 0,
     Giacenza: v.stock,
     "Da riordinare (pz)": v.stock < 0 ? Math.abs(v.stock) : 0,
     "Costo EUR": v.cost || 0,
@@ -3136,6 +3206,8 @@ function exportStockXLSX(rows, onlyNeg) {
     wch: 8
   }, {
     wch: 20
+  }, {
+    wch: 12
   }, {
     wch: 10
   }, {
@@ -3158,6 +3230,8 @@ function Stock({
 }) {
   const [q, setQ] = useState("");
   const [onlyNeg, setOnlyNeg] = useState(false);
+  const [sort, setSort] = useState("nome"); // nome | vend-desc | vend-asc
+  const sold = useMemo(() => soldByVariant(db), [db.orders]);
   const setStock = (pid, vid, val) => {
     setDb(d => ({
       ...d,
@@ -3182,15 +3256,21 @@ function Stock({
   const toReorder = negRows.reduce((s, {
     v
   }) => s + Math.abs(v.stock), 0);
-  const filtered = rows.filter(({
-    p,
-    v
-  }) => (!onlyNeg || v.stock < 0) && (p.name.toLowerCase().includes(q.toLowerCase()) || (v.sku || "").toLowerCase().includes(q.toLowerCase())));
+  const filtered = useMemo(() => {
+    const ql = q.toLowerCase();
+    const out = rows.filter(({
+      p,
+      v
+    }) => (!onlyNeg || v.stock < 0) && (p.name.toLowerCase().includes(ql) || (v.sku || "").toLowerCase().includes(ql)));
+    const sv = r => sold[r.v.id] || 0;
+    if (sort === "vend-desc") out.sort((a, b) => sv(b) - sv(a) || a.p.name.localeCompare(b.p.name, "it") || cmpVariant(a.v, b.v));else if (sort === "vend-asc") out.sort((a, b) => sv(a) - sv(b) || a.p.name.localeCompare(b.p.name, "it") || cmpVariant(a.v, b.v));
+    return out;
+  }, [db.products, q, onlyNeg, sort, sold]);
   return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
     className: "page-h"
   }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("h1", null, "Scorte"), /*#__PURE__*/React.createElement("p", null, rows.length, " varianti · ", negRows.length, " sotto zero da riordinare", readOnly ? " · sola lettura" : "")), /*#__PURE__*/React.createElement("button", {
     className: "btn",
-    onClick: () => exportStockXLSX(filtered, onlyNeg)
+    onClick: () => exportStockXLSX(filtered, onlyNeg, sold)
   }, "⬇ Esporta Excel")), /*#__PURE__*/React.createElement("div", {
     className: "grid kpis",
     style: {
@@ -3220,12 +3300,29 @@ function Stock({
   }, "Tutte"), /*#__PURE__*/React.createElement("button", {
     className: onlyNeg ? "active" : "",
     onClick: () => setOnlyNeg(true)
-  }, "Solo sotto zero"))), /*#__PURE__*/React.createElement("div", {
+  }, "Solo sotto zero")), /*#__PURE__*/React.createElement("div", {
+    className: "pill-tabs"
+  }, /*#__PURE__*/React.createElement("button", {
+    className: sort === "nome" ? "active" : "",
+    onClick: () => setSort("nome")
+  }, "Prodotto A-Z"), /*#__PURE__*/React.createElement("button", {
+    className: sort === "vend-desc" ? "active" : "",
+    onClick: () => setSort("vend-desc")
+  }, "Più venduti ↓"), /*#__PURE__*/React.createElement("button", {
+    className: sort === "vend-asc" ? "active" : "",
+    onClick: () => setSort("vend-asc")
+  }, "Meno venduti ↑"))), /*#__PURE__*/React.createElement("div", {
     className: "panel",
     style: {
       padding: 0
     }
-  }, /*#__PURE__*/React.createElement("table", null, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("th", null, "Prodotto"), /*#__PURE__*/React.createElement("th", null, "Variante"), /*#__PURE__*/React.createElement("th", null, "SKU"), /*#__PURE__*/React.createElement("th", null, "Giacenza"), /*#__PURE__*/React.createElement("th", null, "Da riordinare"))), /*#__PURE__*/React.createElement("tbody", null, filtered.slice(0, 200).map(({
+  }, /*#__PURE__*/React.createElement("table", null, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("th", null, "Prodotto"), /*#__PURE__*/React.createElement("th", null, "Variante"), /*#__PURE__*/React.createElement("th", null, "SKU"), /*#__PURE__*/React.createElement("th", {
+    style: {
+      cursor: "pointer",
+      whiteSpace: "nowrap"
+    },
+    onClick: () => setSort(sort === "vend-desc" ? "vend-asc" : "vend-desc")
+  }, "Venduto ", sort === "vend-desc" ? "↓" : sort === "vend-asc" ? "↑" : "⇅"), /*#__PURE__*/React.createElement("th", null, "Giacenza"), /*#__PURE__*/React.createElement("th", null, "Da riordinare"))), /*#__PURE__*/React.createElement("tbody", null, filtered.slice(0, 200).map(({
     p,
     v
   }) => /*#__PURE__*/React.createElement("tr", {
@@ -3239,7 +3336,12 @@ function Stock({
     }
   }), v.color, " · ", v.size)), /*#__PURE__*/React.createElement("td", {
     className: "tag-small"
-  }, v.sku), /*#__PURE__*/React.createElement("td", null, readOnly ? /*#__PURE__*/React.createElement("span", {
+  }, v.sku), /*#__PURE__*/React.createElement("td", {
+    style: {
+      fontWeight: (sold[v.id] || 0) > 0 ? 700 : 400,
+      color: (sold[v.id] || 0) > 0 ? "inherit" : "var(--muted)"
+    }
+  }, sold[v.id] || 0, " pz"), /*#__PURE__*/React.createElement("td", null, readOnly ? /*#__PURE__*/React.createElement("span", {
     style: {
       fontWeight: v.stock < 0 ? 700 : 400,
       color: v.stock < 0 ? "var(--danger)" : "inherit"
