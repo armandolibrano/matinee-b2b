@@ -651,6 +651,17 @@ function sizeRank(s) {
   if (!isNaN(num)) return 100 + num; /* taglie numeriche: 38, 40, 42... */
   return 800; /* qualsiasi altra etichetta, in fondo ma prima di "-" */
 }
+/* Sul B2B gli articoli senza taglia hanno size "-": in interfaccia si mostra
+   soltanto il colore, e nelle analisi si raggruppano sotto "taglia unica". */
+const szTxt = s => {
+  const x = String(s || "").trim();
+  return !x || x === "-" ? "" : x;
+};
+const vlabel = v => {
+  const c = szTxt(v && v.color),
+    t = szTxt(v && v.size);
+  return c ? t ? c + " · " + t : c : t || "unica";
+};
 function cmpVariant(a, b) {
   const c = String(a.color || "").localeCompare(String(b.color || ""), "it");
   if (c !== 0) return c;
@@ -887,24 +898,67 @@ const uidNew = (p, arr) => {
   while (has(id) && g++ < 50) id = uid(p);
   return id;
 };
+/* Palette pallini colore. Chiavi in minuscolo: prima si cerca il nome esatto
+   (anche composto), poi si scorrono le parole da destra a sinistra, cosi'
+   "maculato viola" prende il viola e "nero rafia chiaro" prende il nero. */
 const COLOR_HEX = {
+  /* neutri */
   nero: "#141414",
-  panna: "#efe9dc",
   bianco: "#ffffff",
-  cammello: "#b8925a",
-  blu: "#26324f",
-  bordeaux: "#5c1f27",
-  verde: "#3d5a45",
-  grigio: "#8b8b8b",
-  rosa: "#e4b7bd",
-  rosso: "#b23b3b",
+  panna: "#efe9dc",
   beige: "#d8c7a8",
+  sabbia: "#d9c9a3",
+  cammello: "#b8925a",
   marrone: "#6b4a2f",
+  fango: "#8a7a63",
+  seppia: "#6f5b45",
+  rum: "#7b4a2a",
+  grigio: "#8b8b8b",
+  argento: "#c0c4c8",
+  oro: "#c9a227",
+  rame: "#a9603a",
+  /* blu e verdi */
+  blu: "#26324f",
+  navy: "#1b2440",
+  royal: "#2f5fd0",
+  celeste: "#8ec6e6",
+  ottanio: "#0f6d75",
+  verde: "#3d5a45",
+  "verde militare": "#4a5233",
+  "verde acqua": "#7fd0c0",
+  "verde menta": "#a8e0c4",
+  salvia: "#9caf88",
+  /* caldi */
   giallo: "#e0b93c",
   arancione: "#d97a2b",
-  fantasia: "#b58bd6"
+  arancio: "#d97a2b",
+  pesca: "#f2b48c",
+  "pesca fluo": "#ff8a5b",
+  rosso: "#b23b3b",
+  bordeaux: "#5c1f27",
+  ciliegia: "#8e1f2f",
+  /* rosa e viola */
+  rosa: "#e4b7bd",
+  "rosa antico": "#c98f96",
+  "rosa chiaro": "#f2d3d8",
+  fucsia: "#d6248f",
+  lilla: "#c3a8d8",
+  viola: "#6b3f8f",
+  fantasia: "#b58bd6",
+  mix: "#a78bc0",
+  /* stampe */
+  maculato: "#a97c4f",
+  zebrato: "#4a4a4a",
+  fiore: "#cf6f8f"
 };
-const swatch = c => COLOR_HEX[(c || "").toLowerCase()] || "#cfcac2";
+const swatch = c => {
+  const k = String(c || "").toLowerCase().trim().replace(/\s+/g, " ");
+  if (!k || k === "-") return "#cfcac2";
+  if (COLOR_HEX[k]) return COLOR_HEX[k];
+  const w = k.split(/[^a-zA-Zàèéìòù]+/).filter(Boolean);
+  for (let i = w.length - 1; i >= 0; i--) if (COLOR_HEX[w[i]]) return COLOR_HEX[w[i]];
+  return "#cfcac2";
+};
 
 /* ---------- dati seed ---------- */
 
@@ -1075,7 +1129,8 @@ function Catalog({
     }));
     persist(dbDeleteProduct(id));
   };
-  const list = db.products.filter(p => p.name.toLowerCase().includes(q.toLowerCase()));
+  const ql0 = q.toLowerCase();
+  const list = db.products.filter(p => p.name.toLowerCase().includes(ql0) || p.variants.some(v => (v.color || "").toLowerCase().includes(ql0)));
   return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
     className: "page-h"
   }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("h1", null, "Catalogo"), /*#__PURE__*/React.createElement("p", null, db.products.length, " prodotti · ", db.products.reduce((s, p) => s + p.variants.length, 0), " varianti")), !readOnly && /*#__PURE__*/React.createElement("button", {
@@ -1130,7 +1185,7 @@ function Catalog({
     style: {
       background: swatch(v.color)
     }
-  }), v.color, " · ", v.size))), /*#__PURE__*/React.createElement("td", {
+  }), vlabel(v)))), /*#__PURE__*/React.createElement("td", {
     className: "tag-small"
   }, v.sku), /*#__PURE__*/React.createElement("td", {
     className: "price-cost"
@@ -1379,7 +1434,7 @@ function bestSellerRank(db) {
     };
     m[k].qty += l.qty;
     m[k].val += l.qty * l.price;
-    const col = r.v.color || "—";
+    const col = szTxt(r.v.color) || "non indicato";
     m[k].colors[col] = (m[k].colors[col] || 0) + l.qty;
   }));
   const pById = {};
@@ -1435,7 +1490,7 @@ function AgentCatalog({
   });
   const list = useMemo(() => {
     const ql = q.toLowerCase();
-    const match = p => p.name.toLowerCase().includes(ql) || p.variants.some(v => (v.sku || "").toLowerCase().includes(ql));
+    const match = p => p.name.toLowerCase().includes(ql) || p.variants.some(v => (v.sku || "").toLowerCase().includes(ql) || (v.color || "").toLowerCase().includes(ql));
     if (cat === BEST_LABEL) {
       return best.map(b => db.products.find(p => p.id === b.id)).filter(p => p && match(p));
     }
@@ -1493,8 +1548,8 @@ function AgentCatalog({
   }, p.name), /*#__PURE__*/React.createElement("div", {
     className: "tag-small"
   }, p.category), (() => {
-    const cols = Array.from(new Set(p.variants.map(v => v.color).filter(Boolean)));
-    const szs = Array.from(new Set(p.variants.map(v => v.size).filter(Boolean)));
+    const cols = Array.from(new Set(p.variants.map(v => szTxt(v.color)).filter(Boolean)));
+    const szs = Array.from(new Set(p.variants.map(v => szTxt(v.size)).filter(Boolean)));
     const prices = p.variants.map(v => v.b2b || 0).filter(x => x > 0);
     const pmin = prices.length ? Math.min(...prices) : 0,
       pmax = prices.length ? Math.max(...prices) : 0;
@@ -1517,7 +1572,7 @@ function AgentCatalog({
       className: "tag-small"
     }, "+", cols.length - 6) : null), /*#__PURE__*/React.createElement("div", {
       className: "tag-small"
-    }, cols.length, " color", cols.length === 1 ? "e" : "i", " · ", szs.length, " taglie · ", pmin === pmax ? eur(pmin) : "da " + eur(pmin), " B2B")), /*#__PURE__*/React.createElement("div", {
+    }, cols.length ? cols.length + " color" + (cols.length === 1 ? "e" : "i") : "colore unico", " · ", szs.length ? szs.length + " taglie" : "taglia unica", " · ", pmin === pmax ? eur(pmin) : "da " + eur(pmin), " B2B")), /*#__PURE__*/React.createElement("div", {
       className: "psum-r"
     }, inCart > 0 && /*#__PURE__*/React.createElement("span", {
       className: "cart-badge"
@@ -1544,7 +1599,7 @@ function AgentCatalog({
     style: {
       background: swatch(v.color)
     }
-  }), v.color, " · ", v.size)), /*#__PURE__*/React.createElement("div", {
+  }), vlabel(v))), /*#__PURE__*/React.createElement("div", {
     className: "tag-small",
     style: {
       marginTop: 2
@@ -1694,7 +1749,7 @@ function AgentCart({
     style: {
       background: swatch(l.v.color)
     }
-  }), l.v.color, " · ", l.v.size)), /*#__PURE__*/React.createElement("td", null, eur(l.v.b2b)), /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("div", {
+  }), vlabel(l.v))), /*#__PURE__*/React.createElement("td", null, eur(l.v.b2b)), /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("div", {
     className: "qty"
   }, /*#__PURE__*/React.createElement("button", {
     onClick: () => setQty(l.vid, l.qty - 1)
@@ -2307,7 +2362,7 @@ function buildEmailBody(order, db) {
   const a = db.users.find(x => x.id === order.agentId) || {};
   const rows = orderLinesSorted(order, vI).map(l => {
     const v = vI[l.variantId] || {};
-    return `- ${v.productName || "?"} | ${v.color || ""} ${v.size || ""} | q.tà ${l.qty} | ${eur(l.price)} | ${eur(l.qty * l.price)}`;
+    return `- ${v.productName || "?"} | ${vlabel(v)} | q.tà ${l.qty} | ${eur(l.price)} | ${eur(l.qty * l.price)}`;
   }).join("\n");
   const r2 = x => Math.round(x * 100) / 100;
   const imp = r2(order.lines.reduce((s, l) => s + l.qty * l.price, 0));
@@ -2377,7 +2432,7 @@ function genOrderPDF(order, db) {
   y = yc + Math.max(cl.length, ag.length) * 13 + 12;
   const body = orderLinesSorted(order, vI).map(l => {
     const v = vI[l.variantId] || {};
-    return [v.productName || "—", (v.color || "") + " · " + (v.size || ""), v.sku || "", String(l.qty), eur(l.price), v.retail ? eur(v.retail) : "—", eur(l.qty * l.price)];
+    return [v.productName || "—", vlabel(v), v.sku || "", String(l.qty), eur(l.price), v.retail ? eur(v.retail) : "—", eur(l.qty * l.price)];
   });
   doc.autoTable({
     startY: y,
@@ -2785,7 +2840,7 @@ function OrderEditor({
   const addResults = useMemo(() => {
     const s = addQ.trim().toLowerCase();
     if (s.length < 2) return [];
-    return db.products.filter(p => (p.name || "").toLowerCase().includes(s) || (p.category || "").toLowerCase().includes(s) || p.variants.some(v => (v.sku || "").toLowerCase().includes(s) || (v.barcode || "").toLowerCase().includes(s))).slice(0, 6);
+    return db.products.filter(p => (p.name || "").toLowerCase().includes(s) || (p.category || "").toLowerCase().includes(s) || p.variants.some(v => (v.sku || "").toLowerCase().includes(s) || (v.barcode || "").toLowerCase().includes(s) || (v.color || "").toLowerCase().includes(s))).slice(0, 6);
   }, [addQ, db.products]);
   const inCart = vid => {
     const l = lines.find(x => x.variantId === vid);
@@ -2901,7 +2956,7 @@ function OrderEditor({
       style: {
         background: swatch(v.color)
       }
-    }), v.color, " · ", v.size)), /*#__PURE__*/React.createElement("td", null, eur(l.price)), /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("div", {
+    }), vlabel(v))), /*#__PURE__*/React.createElement("td", null, eur(l.price)), /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("div", {
       className: "qty"
     }, /*#__PURE__*/React.createElement("button", {
       onClick: () => setQty(l.variantId, l.qty - 1)
@@ -2972,7 +3027,7 @@ function OrderEditor({
     style: {
       background: swatch(v.color)
     }
-  }), v.color, " · ", v.size)), /*#__PURE__*/React.createElement("div", {
+  }), vlabel(v))), /*#__PURE__*/React.createElement("div", {
     className: "tag-small",
     style: {
       marginTop: 2
@@ -3130,9 +3185,9 @@ function Dashboard({
       if (!r) return;
       const cat = r.p.category || "—";
       c[cat] = (c[cat] || 0) + l.qty * l.price;
-      const sz = r.v.size || "unica";
+      const sz = szTxt(r.v.size) || "unica";
       t[sz] = (t[sz] || 0) + l.qty;
-      const col = r.v.color || "—";
+      const col = szTxt(r.v.color) || "non indicato";
       k[col] = (k[col] || 0) + l.qty;
     }));
     return {
@@ -3477,7 +3532,7 @@ function Stock({
     const out = rows.filter(({
       p,
       v
-    }) => (!onlyNeg || v.stock < 0) && (p.name.toLowerCase().includes(ql) || (v.sku || "").toLowerCase().includes(ql)));
+    }) => (!onlyNeg || v.stock < 0) && (p.name.toLowerCase().includes(ql) || (v.sku || "").toLowerCase().includes(ql) || (v.color || "").toLowerCase().includes(ql)));
     const sv = r => sold[r.v.id] || 0;
     if (sort === "vend-desc") out.sort((a, b) => sv(b) - sv(a) || a.p.name.localeCompare(b.p.name, "it") || cmpVariant(a.v, b.v));else if (sort === "vend-asc") out.sort((a, b) => sv(a) - sv(b) || a.p.name.localeCompare(b.p.name, "it") || cmpVariant(a.v, b.v));
     return out;
@@ -3550,7 +3605,7 @@ function Stock({
     style: {
       background: swatch(v.color)
     }
-  }), v.color, " · ", v.size)), /*#__PURE__*/React.createElement("td", {
+  }), vlabel(v))), /*#__PURE__*/React.createElement("td", {
     className: "tag-small"
   }, v.sku), /*#__PURE__*/React.createElement("td", {
     style: {
