@@ -131,6 +131,20 @@
   .bar-track{flex:1;background:#f0eee9;border-radius:6px;height:22px;overflow:hidden}
   .bar-fill{height:100%;background:var(--ink);border-radius:6px}
   .bar-val{width:96px;text-align:right;font-size:12.5px;font-weight:600}
+  .bar-fill.gold{background:linear-gradient(90deg,#d3b384,#b8925a)}
+  .panel-h{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:12px}
+  .panel-h h3{margin:0;font-size:14px;font-weight:600;letter-spacing:.01em}
+  .panel-h .sub{font-size:11px;color:var(--muted);text-align:right;white-space:nowrap}
+  .sec-title{font-size:11px;text-transform:uppercase;letter-spacing:.12em;color:var(--muted);font-weight:700;margin:24px 0 10px}
+  .cols{display:flex;align-items:flex-end;gap:9px;height:172px;margin-top:6px}
+  .cols .c{flex:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;gap:5px;height:100%;min-width:0}
+  .cols .c .b{width:100%;max-width:54px;background:linear-gradient(180deg,#d3b384,#b8925a);border-radius:7px 7px 0 0;min-height:3px}
+  .cols .c:hover .b{background:linear-gradient(180deg,#141414,#3a3a3a)}
+  .cols .c .vv{font-size:11px;font-weight:700;color:#4a4843}
+  .cols .c .lb{font-size:10.5px;color:#4a4843;white-space:nowrap}
+  .cols .c .lb2{font-size:10px;color:var(--muted);white-space:nowrap}
+  .dash-thumb{width:44px;height:44px;object-fit:cover;border-radius:9px;background:#f0eee9;display:block}
+  .dash-thumb.empty{display:flex;align-items:center;justify-content:center;color:#c2beb7;font-size:15px}
   .badge-cons{display:inline-block;background:#f3ead9;color:var(--accent2);font-weight:700;font-size:11px;padding:2px 7px;border-radius:6px}
   .neg{color:var(--danger);font-weight:700}
   .credit{background:#141414;color:#c9c6c1;text-align:center;font-size:12px;padding:11px 18px;line-height:1.6}
@@ -1368,10 +1382,24 @@ function bestSellerRank(db) {
     const col = r.v.color || "—";
     m[k].colors[col] = (m[k].colors[col] || 0) + l.qty;
   }));
-  return Object.values(m).map(x => ({
-    ...x,
-    topColors: Object.entries(x.colors).sort((a, b) => b[1] - a[1])
-  })).sort((a, b) => b.qty - a.qty || b.val - a.val).slice(0, BEST_N).map((x, i) => ({
+  const pById = {};
+  db.products.forEach(p => {
+    pById[p.id] = p;
+  });
+  const photoOf = (pid, col) => {
+    const p = pById[pid];
+    if (!p) return null;
+    const same = p.variants.find(v => v.color === col && v.photo);
+    return same && same.photo || (p.variants.find(v => v.photo) || {}).photo || null;
+  };
+  return Object.values(m).map(x => {
+    const tc = Object.entries(x.colors).sort((a, b) => b[1] - a[1]);
+    return {
+      ...x,
+      topColors: tc,
+      photo: photoOf(x.id, (tc[0] || [])[0])
+    };
+  }).sort((a, b) => b.qty - a.qty || b.val - a.val).slice(0, BEST_N).map((x, i) => ({
     ...x,
     rank: i + 1
   }));
@@ -1450,7 +1478,7 @@ function AgentCatalog({
     key: p.id
   }, bestRank[p.id] && /*#__PURE__*/React.createElement("span", {
     className: "bs-ribbon"
-  }, "★ Best Seller · ", bestRank[p.id], "º"), /*#__PURE__*/React.createElement(Img, {
+  }, "★ Best Seller"), /*#__PURE__*/React.createElement(Img, {
     src: p.variants[0] && p.variants[0].photo,
     cls: "cover",
     fallback: "▢",
@@ -2172,9 +2200,17 @@ function orderLinesSorted(order, vI) {
 }
 /* Danea Easyfatt: il codice articolo non contiene il colore.
    Alcuni prodotti hanno il colore nel nome (es. "EM2152 nero" con variante senza colore):
-   in quel caso il nome va spezzato in codice + colore. Taglia e colore in MAIUSCOLO. */
+   in quel caso il nome va spezzato in codice + colore.
+   Taglia e colore vanno scritti ESATTAMENTE come stanno nell'anagrafica Danea
+   (taglie XS/S/M/L/XL maiuscole, "unica" minuscola, colori minuscoli) e la colonna
+   Taglia/Colore deve SEMPRE avere le due parti separate da "/": se una manca si mette "-".
+   Senza il "/" Danea legge il colore come se fosse una taglia e rifiuta la riga.
+   Sul B2B gli articoli senza taglia hanno size "-": in Danea gli abiti (DM…) e i teli
+   hanno comunque la taglia "unica" in anagrafica, mentre le borse (BAG…) non hanno
+   proprio la taglia e vogliono "-". */
 const PROVVIGIONE_DEFAULT = 12,
   IVA_DEFAULT = "22";
+const DANEA_SENZA_TAGLIA = ["BAG"]; /* categorie che in Danea non hanno la taglia */
 function daneaVar(v) {
   let code = String(v.productName || "").trim(),
     col = String(v.color || "").trim();
@@ -2188,10 +2224,16 @@ function daneaVar(v) {
   if (col === "-") col = "";
   let size = String(v.size || "").trim();
   if (size === "-") size = "";
+  if (!size) {
+    const cat = String(v.productCategory || "").trim().toUpperCase();
+    const senza = DANEA_SENZA_TAGLIA.indexOf(cat) >= 0 || /^BAG/i.test(code);
+    if (!senza) size = "unica";
+  }
   return {
     code: code,
-    col: col.toUpperCase(),
-    size: size.toUpperCase()
+    col: col,
+    size: size,
+    tc: (size || "-") + "/" + (col || "-")
   };
 }
 function exportOrderGestionaleXLSX(order, db) {
@@ -2204,7 +2246,7 @@ function exportOrderGestionaleXLSX(order, db) {
   const data = orderLinesSorted(order, vI).map(l => {
     const v = vI[l.variantId] || {},
       d = daneaVar(v);
-    const tc = [d.size, d.col].filter(Boolean).join("/");
+    const tc = d.tc;
     const attr = [d.size, d.col].filter(Boolean).join(", ");
     const desc = [String(v.productCategory || d.code).toUpperCase(), attr].filter(Boolean).join(" - ");
     const prezzo = Number(l.price) || 0;
@@ -2966,6 +3008,34 @@ function OrderEditor({
 }
 
 /* ---------- DASHBOARD (direttore/admin) ---------- */
+const MESI_BREVI = ["gen", "feb", "mar", "apr", "mag", "giu", "lug", "ago", "set", "ott", "nov", "dic"];
+function meseLabel(ym) {
+  /* "2026-07" -> "lug 26" */
+  const p = String(ym).split("-");
+  const m = parseInt(p[1], 10);
+  return (MESI_BREVI[m - 1] || p[1]) + " " + String(p[0]).slice(2);
+}
+function Panel({
+  title,
+  sub,
+  children,
+  pad
+}) {
+  return /*#__PURE__*/React.createElement("div", {
+    className: "panel",
+    style: pad === 0 ? {
+      padding: 0
+    } : undefined
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "panel-h",
+    style: pad === 0 ? {
+      padding: "14px 16px 0",
+      marginBottom: 6
+    } : undefined
+  }, /*#__PURE__*/React.createElement("h3", null, title), sub ? /*#__PURE__*/React.createElement("span", {
+    className: "sub"
+  }, sub) : null), children);
+}
 function Dashboard({
   db
 }) {
@@ -2999,34 +3069,120 @@ function Dashboard({
     byStatus[o.status] = (byStatus[o.status] || 0) + 1;
   });
   const best = useMemo(() => bestSellerRank(db), [db.products, db.orders]);
+  const clientiAttivi = useMemo(() => new Set(orders.map(o => o.clientId).filter(Boolean)).size, [orders]);
+
+  /* indice varianti: serve per categoria, taglie e colori */
+  const vI = useMemo(() => {
+    const m = {};
+    db.products.forEach(p => p.variants.forEach(v => {
+      m[v.id] = {
+        p,
+        v
+      };
+    }));
+    return m;
+  }, [db.products]);
+
+  /* andamento mensile: valore e numero ordini */
+  const perMese = useMemo(() => {
+    const m = {};
+    orders.forEach(o => {
+      const k = String(o.createdAt || "").slice(0, 7);
+      if (k.length !== 7) return;
+      if (!m[k]) m[k] = {
+        val: 0,
+        n: 0
+      };
+      m[k].val += o.total;
+      m[k].n++;
+    });
+    return Object.entries(m).sort((a, b) => a[0] < b[0] ? -1 : 1).slice(-12);
+  }, [orders]);
+
+  /* top clienti per valore */
+  const perCliente = useMemo(() => {
+    const nome = {};
+    db.clients.forEach(c => {
+      nome[c.id] = c.name;
+    });
+    const m = {};
+    orders.forEach(o => {
+      const k = nome[o.clientId] || "—";
+      m[k] = (m[k] || 0) + o.total;
+    });
+    return Object.entries(m).sort((a, b) => b[1] - a[1]).slice(0, 10);
+  }, [orders, db.clients]);
+
+  /* valore per categoria, pezzi per taglia, pezzi per colore */
+  const {
+    perCat,
+    perTaglia,
+    perColore,
+    rigaMedia
+  } = useMemo(() => {
+    const c = {},
+      t = {},
+      k = {};
+    let nRighe = 0;
+    orders.forEach(o => o.lines.forEach(l => {
+      const r = vI[l.variantId];
+      nRighe++;
+      if (!r) return;
+      const cat = r.p.category || "—";
+      c[cat] = (c[cat] || 0) + l.qty * l.price;
+      const sz = r.v.size || "unica";
+      t[sz] = (t[sz] || 0) + l.qty;
+      const col = r.v.color || "—";
+      k[col] = (k[col] || 0) + l.qty;
+    }));
+    return {
+      perCat: Object.entries(c).sort((a, b) => b[1] - a[1]),
+      perTaglia: Object.entries(t).sort((a, b) => sizeRank(a[0]) - sizeRank(b[0])),
+      perColore: Object.entries(k).sort((a, b) => b[1] - a[1]).slice(0, 10),
+      rigaMedia: nRighe
+    };
+  }, [orders, vI]);
   const Bars = ({
-    data
+    data,
+    fmt,
+    gold,
+    dot
   }) => {
     const max = Math.max(1, ...data.map(d => d[1]));
+    const f = fmt || eur;
     return /*#__PURE__*/React.createElement("div", null, data.map(([k, v]) => /*#__PURE__*/React.createElement("div", {
       className: "bar-row",
       key: k
     }, /*#__PURE__*/React.createElement("span", {
       className: "lab"
-    }, k), /*#__PURE__*/React.createElement("div", {
+    }, dot ? /*#__PURE__*/React.createElement("span", {
+      className: "swatch",
+      style: {
+        background: swatch(k),
+        display: "inline-block",
+        marginRight: 6,
+        verticalAlign: "-1px"
+      }
+    }) : null, k), /*#__PURE__*/React.createElement("div", {
       className: "bar-track"
     }, /*#__PURE__*/React.createElement("div", {
-      className: "bar-fill",
+      className: "bar-fill" + (gold ? " gold" : ""),
       style: {
-        width: v / max * 100 + "%"
+        width: Math.max(2, v / max * 100) + "%"
       }
     })), /*#__PURE__*/React.createElement("span", {
       className: "bar-val"
-    }, eur(v)))), data.length === 0 && /*#__PURE__*/React.createElement("div", {
+    }, f(v)))), data.length === 0 && /*#__PURE__*/React.createElement("div", {
       className: "tag-small"
     }, "Nessun dato."));
   };
+  const maxMese = Math.max(1, ...perMese.map(d => d[1].val));
   return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
     className: "page-h"
   }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("h1", null, "Dashboard"), /*#__PURE__*/React.createElement("p", null, "Andamento ordini di tutti gli agenti"))), /*#__PURE__*/React.createElement("div", {
     className: "grid kpis",
     style: {
-      marginBottom: 18
+      marginBottom: 6
     }
   }, /*#__PURE__*/React.createElement(Kpi, {
     label: "Ordini",
@@ -3036,89 +3192,85 @@ function Dashboard({
     value: eur(val)
   }), /*#__PURE__*/React.createElement(Kpi, {
     label: "Pezzi",
-    value: pieces
+    value: pieces.toLocaleString("it-IT")
   }), /*#__PURE__*/React.createElement(Kpi, {
     label: "Valore medio ordine",
     value: eur(orders.length ? val / orders.length : 0)
+  }), /*#__PURE__*/React.createElement(Kpi, {
+    label: "Clienti che hanno ordinato",
+    value: clientiAttivi
+  }), /*#__PURE__*/React.createElement(Kpi, {
+    label: "Pezzi per ordine",
+    value: orders.length ? Math.round(pieces / orders.length) : 0
   })), /*#__PURE__*/React.createElement("div", {
+    className: "sec-title"
+  }, "Andamento"), /*#__PURE__*/React.createElement(Panel, {
+    title: "Valore ordinato per mese",
+    sub: perMese.length ? "ultimi " + perMese.length + " mesi" : ""
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "cols"
+  }, perMese.map(([k, d]) => /*#__PURE__*/React.createElement("div", {
+    className: "c",
+    key: k,
+    title: d.n + " ordini · " + eur(d.val)
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "vv"
+  }, Math.round(d.val / 1000), "k"), /*#__PURE__*/React.createElement("div", {
+    className: "b",
+    style: {
+      height: Math.max(3, d.val / maxMese * 100) + "%"
+    }
+  }), /*#__PURE__*/React.createElement("span", {
+    className: "lb"
+  }, meseLabel(k)), /*#__PURE__*/React.createElement("span", {
+    className: "lb2"
+  }, d.n, " ord."))), perMese.length === 0 && /*#__PURE__*/React.createElement("div", {
+    className: "tag-small"
+  }, "Nessun ordine con data valida."))), /*#__PURE__*/React.createElement("div", {
+    className: "sec-title"
+  }, "Rete vendita"), /*#__PURE__*/React.createElement("div", {
     className: "grid",
     style: {
       gridTemplateColumns: "1fr 1fr",
       gap: 18
     }
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "panel"
-  }, /*#__PURE__*/React.createElement("strong", null, "Valore per agente"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      marginTop: 12
-    }
+  }, /*#__PURE__*/React.createElement(Panel, {
+    title: "Valore per agente",
+    sub: byAgent.length + " agenti"
   }, /*#__PURE__*/React.createElement(Bars, {
     data: byAgent
-  }))), /*#__PURE__*/React.createElement("div", {
-    className: "panel"
-  }, /*#__PURE__*/React.createElement("strong", null, "Valore per consegna (stagione)"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      marginTop: 12
-    }
+  })), /*#__PURE__*/React.createElement(Panel, {
+    title: "Valore per zona",
+    sub: byZone.length + " zone"
   }, /*#__PURE__*/React.createElement(Bars, {
-    data: byDelivery
-  }))), /*#__PURE__*/React.createElement("div", {
-    className: "panel"
-  }, /*#__PURE__*/React.createElement("strong", null, "Valore per zona"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      marginTop: 12
-    }
+    data: byZone,
+    gold: true
+  })), /*#__PURE__*/React.createElement(Panel, {
+    title: "Top 10 clienti per valore",
+    sub: clientiAttivi + " clienti attivi"
   }, /*#__PURE__*/React.createElement(Bars, {
-    data: byZone
+    data: perCliente
+  })), /*#__PURE__*/React.createElement(Panel, {
+    title: "Valore per categoria",
+    sub: perCat.length + " categorie"
+  }, /*#__PURE__*/React.createElement(Bars, {
+    data: perCat,
+    gold: true
   }))), /*#__PURE__*/React.createElement("div", {
-    className: "panel"
-  }, /*#__PURE__*/React.createElement("strong", null, "Ordini per stato"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      marginTop: 12
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "between",
-    style: {
-      padding: "7px 0",
-      borderBottom: "1px solid var(--line)"
-    }
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "status bozza"
-  }, "bozza"), /*#__PURE__*/React.createElement("strong", null, byStatus.bozza || 0)), /*#__PURE__*/React.createElement("div", {
-    className: "between",
-    style: {
-      padding: "7px 0",
-      borderBottom: "1px solid var(--line)"
-    }
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "status confermato"
-  }, "confermato"), /*#__PURE__*/React.createElement("strong", null, byStatus.confermato || 0)), /*#__PURE__*/React.createElement("div", {
-    className: "between",
-    style: {
-      padding: "7px 0"
-    }
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "status spedito"
-  }, "spedito"), /*#__PURE__*/React.createElement("strong", null, byStatus.spedito || 0))))), /*#__PURE__*/React.createElement("div", {
-    className: "panel",
-    style: {
-      marginTop: 18,
-      padding: 0
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      padding: "14px 16px 4px"
-    }
-  }, /*#__PURE__*/React.createElement("strong", null, "Top ", best.length, " prodotti più venduti (di sempre)"), /*#__PURE__*/React.createElement("p", {
-    className: "tag-small",
-    style: {
-      marginTop: 2
-    }
-  }, "Somma di tutte le taglie, su tutti gli ordini. Sono gli stessi prodotti che gli agenti vedono con l'etichetta “Best Seller” a catalogo.")), /*#__PURE__*/React.createElement("table", null, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("th", {
+    className: "sec-title"
+  }, "Prodotto"), /*#__PURE__*/React.createElement(Panel, {
+    title: "Top " + best.length + " prodotti più venduti (di sempre)",
+    sub: "stessi prodotti con l'etichetta Best Seller a catalogo",
+    pad: 0
+  }, /*#__PURE__*/React.createElement("table", null, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("th", {
     style: {
       width: 44
     }
-  }, "#"), /*#__PURE__*/React.createElement("th", null, "Prodotto"), /*#__PURE__*/React.createElement("th", null, "Colori più venduti"), /*#__PURE__*/React.createElement("th", {
+  }, "#"), /*#__PURE__*/React.createElement("th", {
+    style: {
+      width: 56
+    }
+  }), /*#__PURE__*/React.createElement("th", null, "Prodotto"), /*#__PURE__*/React.createElement("th", null, "Colori più venduti"), /*#__PURE__*/React.createElement("th", {
     style: {
       textAlign: "right"
     }
@@ -3130,7 +3282,11 @@ function Dashboard({
     key: b.id
   }, /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("span", {
     className: "rank-n" + (b.rank <= 3 ? " top" : "")
-  }, b.rank)), /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("strong", {
+  }, b.rank)), /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement(Img, {
+    src: b.photo,
+    cls: "dash-thumb",
+    fallback: "▢"
+  })), /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("strong", {
     style: {
       fontWeight: 600
     }
@@ -3152,7 +3308,7 @@ function Dashboard({
       textAlign: "right",
       fontWeight: 700
     }
-  }, b.qty), /*#__PURE__*/React.createElement("td", {
+  }, b.qty.toLocaleString("it-IT")), /*#__PURE__*/React.createElement("td", {
     style: {
       textAlign: "right"
     }
@@ -3161,7 +3317,67 @@ function Dashboard({
     style: {
       padding: 14
     }
-  }, "Nessun venduto registrato.")));
+  }, "Nessun venduto registrato.")), /*#__PURE__*/React.createElement("div", {
+    className: "grid",
+    style: {
+      gridTemplateColumns: "1fr 1fr",
+      gap: 18,
+      marginTop: 18
+    }
+  }, /*#__PURE__*/React.createElement(Panel, {
+    title: "Taglie più vendute",
+    sub: "pezzi, tutte le stagioni"
+  }, /*#__PURE__*/React.createElement(Bars, {
+    data: perTaglia,
+    fmt: n => n.toLocaleString("it-IT") + " pz",
+    gold: true
+  })), /*#__PURE__*/React.createElement(Panel, {
+    title: "Top 10 colori",
+    sub: "pezzi, tutte le stagioni"
+  }, /*#__PURE__*/React.createElement(Bars, {
+    data: perColore,
+    fmt: n => n.toLocaleString("it-IT") + " pz",
+    dot: true
+  }))), /*#__PURE__*/React.createElement("div", {
+    className: "sec-title"
+  }, "Consegne e stato"), /*#__PURE__*/React.createElement("div", {
+    className: "grid",
+    style: {
+      gridTemplateColumns: "1fr 1fr",
+      gap: 18
+    }
+  }, /*#__PURE__*/React.createElement(Panel, {
+    title: "Valore per consegna (stagione)"
+  }, /*#__PURE__*/React.createElement(Bars, {
+    data: byDelivery,
+    gold: true
+  })), /*#__PURE__*/React.createElement(Panel, {
+    title: "Ordini per stato",
+    sub: rigaMedia.toLocaleString("it-IT") + " righe in totale"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "between",
+    style: {
+      padding: "9px 0",
+      borderBottom: "1px solid var(--line)"
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "status bozza"
+  }, "bozza"), /*#__PURE__*/React.createElement("strong", null, byStatus.bozza || 0)), /*#__PURE__*/React.createElement("div", {
+    className: "between",
+    style: {
+      padding: "9px 0",
+      borderBottom: "1px solid var(--line)"
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "status confermato"
+  }, "confermato"), /*#__PURE__*/React.createElement("strong", null, byStatus.confermato || 0)), /*#__PURE__*/React.createElement("div", {
+    className: "between",
+    style: {
+      padding: "9px 0"
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "status spedito"
+  }, "spedito"), /*#__PURE__*/React.createElement("strong", null, byStatus.spedito || 0)))));
 }
 
 /* ---------- SCORTE (admin) ---------- */
