@@ -2279,11 +2279,17 @@ function daneaVar(v) {
   if (col === "-") col = "";
   let size = String(v.size || "").trim();
   if (size === "-") size = "";
+  /* Danea tiene le taglie in MAIUSCOLO nell'anagrafica (XS S M L XL XXL):
+     se il file arriva con "s" o "l" minuscoli risponde "Taglia/colore sconosciuta".
+     La taglia "unica" invece resta minuscola come in anagrafica. */
+  if (/^(xxs|xs|s|m|l|xl|xxl|2xl|3xl|xxxl|tu|u)$/i.test(size)) size = size.toUpperCase();
   if (!size) {
     const cat = String(v.productCategory || "").trim().toUpperCase();
     const senza = DANEA_SENZA_TAGLIA.indexOf(cat) >= 0 || /^BAG/i.test(code);
     if (!senza) size = "unica";
   }
+  /* i colori in Danea hanno l'iniziale maiuscola ("Maculato", "Nero") */
+  if (col) col = col.charAt(0).toUpperCase() + col.slice(1);
   return {
     code: code,
     col: col,
