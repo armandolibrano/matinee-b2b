@@ -2310,24 +2310,20 @@ function daneaVar(v) {
     tc: (size || "-") + "/" + (col || "-")
   };
 }
-function exportOrderGestionaleXLSX(order, db) {
-  if (!window.XLSX) {
-    alert("Modulo Excel non caricato, riprova tra un istante.");
-    return;
-  }
-  const vI = orderVIndex(db);
-  const header = ["Cod.", "Descrizione", "Taglia/Colore", "Q.tà", "Q.tà consegnata", "Prezzo netto", "U.m.", "Sconti", "% Provv.", "Iva", "Importo"];
-  const data = orderLinesSorted(order, vI).map(l => {
-    const v = vI[l.variantId] || {},
+const DANEA_HEADER = ["Cod.", "Descrizione", "Taglia/Colore", "Q.tà", "Q.tà consegnata", "Prezzo netto", "U.m.", "Sconti", "% Provv.", "Iva", "Importo"];
+/* righe di un ordine gia' tradotte nel formato Danea */
+function daneaRows(order, db, vI) {
+  const idx = vI || orderVIndex(db);
+  return orderLinesSorted(order, idx).map(l => {
+    const v = idx[l.variantId] || {},
       d = daneaVar(v);
-    const tc = d.tc;
     const attr = [d.size, d.col].filter(Boolean).join(", ");
     const desc = [String(v.productCategory || d.code).toUpperCase(), attr].filter(Boolean).join(" - ");
     const prezzo = Number(l.price) || 0;
     return {
       "Cod.": d.code,
       "Descrizione": desc,
-      "Taglia/Colore": tc,
+      "Taglia/Colore": d.tc,
       "Q.tà": l.qty,
       "Q.tà consegnata": l.qty,
       "Prezzo netto": prezzo,
@@ -2338,8 +2334,17 @@ function exportOrderGestionaleXLSX(order, db) {
       "Importo": Math.round(l.qty * prezzo * 100) / 100
     };
   });
-  const ws = XLSX.utils.json_to_sheet(data, {
-    header
+}
+/* righe in cui manca la taglia o il colore: Danea le puo' rifiutare */
+function daneaIncomplete(rows) {
+  return rows.filter(r => String(r["Taglia/Colore"]).split("/").indexOf("-") >= 0).length;
+}
+function daneaFileName(order) {
+  return "Ordine_" + order.number + "_gestionale.xlsx";
+}
+function daneaWorkbook(rows) {
+  const ws = XLSX.utils.json_to_sheet(rows, {
+    header: DANEA_HEADER
   });
   ws["!cols"] = [{
     wch: 12
@@ -2365,7 +2370,7 @@ function exportOrderGestionaleXLSX(order, db) {
     wch: 12
   }];
   /* formato valuta su Prezzo netto (F) e Importo (K), come nel file di esempio Danea */
-  for (let i = 0; i < data.length; i++) {
+  for (let i = 0; i < rows.length; i++) {
     ["F", "K"].forEach(col => {
       const ref = col + (i + 2);
       if (ws[ref]) ws[ref].z = '"€"\\ #,##0.00##';
@@ -2373,7 +2378,98 @@ function exportOrderGestionaleXLSX(order, db) {
   }
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "Righe documento");
-  XLSX.writeFile(wb, "Ordine_" + order.number + "_gestionale.xlsx");
+  return wb;
+}
+function exportOrderGestionaleXLSX(order, db) {
+  if (!window.XLSX) {
+    alert("Modulo Excel non caricato, riprova tra un istante.");
+    return;
+  }
+  XLSX.writeFile(daneaWorkbook(daneaRows(order, db)), daneaFileName(order));
+}
+/* ZIP senza compressione (metodo "store"): gli xlsx sono gia' compressi al loro
+   interno, qui serve solo mettere piu' file in un unico download. */
+const CRC_T = function () {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ c >>> 1 : c >>> 1;
+    t[n] = c >>> 0;
+  }
+  return t;
+}();
+function crc32(u8) {
+  let c = 0xFFFFFFFF;
+  for (let i = 0; i < u8.length; i++) c = CRC_T[(c ^ u8[i]) & 0xFF] ^ c >>> 8;
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+function zipStore(files) {
+  const enc = new TextEncoder();
+  const u16 = n => new Uint8Array([n & 255, n >> 8 & 255]);
+  const u32 = n => new Uint8Array([n & 255, n >>> 8 & 255, n >>> 16 & 255, n >>> 24 & 255]);
+  const sig = s => new Uint8Array([s.charCodeAt(0), s.charCodeAt(1), s.charCodeAt(2), s.charCodeAt(3)]);
+  const DATE = 33; /* 1 gennaio 1980 in formato DOS */
+  const body = [],
+    cdir = [];
+  let off = 0,
+    cdlen = 0;
+  files.forEach(f => {
+    const nm = enc.encode(f.name),
+      d = f.data,
+      crc = crc32(d);
+    const local = [sig("PK\u0003\u0004"), u16(20), u16(0), u16(0), u16(0), u16(DATE), u32(crc), u32(d.length), u32(d.length), u16(nm.length), u16(0), nm, d];
+    let len = 0;
+    local.forEach(x => {
+      body.push(x);
+      len += x.length;
+    });
+    const rec = [sig("PK\u0001\u0002"), u16(20), u16(20), u16(0), u16(0), u16(0), u16(DATE), u32(crc), u32(d.length), u32(d.length), u16(nm.length), u16(0), u16(0), u16(0), u16(0), u32(0), u32(off), nm];
+    rec.forEach(x => {
+      cdir.push(x);
+      cdlen += x.length;
+    });
+    off += len;
+  });
+  const end = [sig("PK\u0005\u0006"), u16(0), u16(0), u16(files.length), u16(files.length), u32(cdlen), u32(off), u16(0)];
+  const all = body.concat(cdir, end);
+  let total = 0;
+  all.forEach(x => total += x.length);
+  const out = new Uint8Array(total);
+  let p = 0;
+  all.forEach(x => {
+    out.set(x, p);
+    p += x.length;
+  });
+  return new Blob([out], {
+    type: "application/zip"
+  });
+}
+function downloadBlob(blob, name) {
+  const u = URL.createObjectURL(blob),
+    a = document.createElement("a");
+  a.href = u;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => {
+    URL.revokeObjectURL(u);
+    a.remove();
+  }, 400);
+}
+function exportDaneaZip(orders, db, zipName) {
+  if (!window.XLSX) {
+    alert("Modulo Excel non caricato, riprova tra un istante.");
+    return;
+  }
+  const vI = orderVIndex(db);
+  const files = orders.map(o => ({
+    name: daneaFileName(o),
+    data: new Uint8Array(XLSX.write(daneaWorkbook(daneaRows(o, db, vI)), {
+      bookType: "xlsx",
+      type: "array"
+    }))
+  }));
+  downloadBlob(zipStore(files), zipName);
 }
 function buildEmailBody(order, db) {
   const vI = orderVIndex(db);
@@ -2636,6 +2732,225 @@ function SendModal({
 }
 
 /* ---------- ORDINI ---------- */
+/* Ordini Danea: pannello riservato all'admin per esportare in blocco gli ordini
+   di un giorno o di un periodo. Un file per ordine dentro un unico ZIP, perche'
+   Easyfatt importa un documento per volta. */
+function DaneaOrders({
+  db
+}) {
+  const iso = d => new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  const today = iso(new Date());
+  const back = n => {
+    const d = new Date();
+    d.setDate(d.getDate() - n);
+    return iso(d);
+  };
+  const [from, setFrom] = useState(today);
+  const [to, setTo] = useState(today);
+  const [off, setOff] = useState({});
+  const setRange = (a, b) => {
+    setFrom(a);
+    setTo(b);
+    setOff({});
+  };
+  const mese = k => {
+    const d = new Date();
+    d.setDate(1);
+    d.setMonth(d.getMonth() - k);
+    const a = iso(d);
+    const e = new Date(d.getFullYear(), d.getMonth() + 1, 0);
+    return [a, k === 0 ? today : iso(e)];
+  };
+  const list = useMemo(() => {
+    const a = from <= to ? from : to,
+      b = from <= to ? to : from;
+    return db.orders.filter(o => {
+      const d = String(o.createdAt || "").slice(0, 10);
+      return d >= a && d <= b;
+    }).sort((x, y) => x.createdAt === y.createdAt ? Number(x.number) - Number(y.number) : x.createdAt < y.createdAt ? -1 : 1);
+  }, [db, from, to]);
+  const info = useMemo(() => {
+    const vI = orderVIndex(db),
+      m = {};
+    list.forEach(o => {
+      const r = daneaRows(o, db, vI);
+      m[o.id] = {
+        righe: r.length,
+        pezzi: r.reduce((s, x) => s + x["Q.tà"], 0),
+        imp: r.reduce((s, x) => s + x["Importo"], 0),
+        ko: daneaIncomplete(r)
+      };
+    });
+    return m;
+  }, [db, list]);
+  const clientName = id => {
+    const c = db.clients.find(x => x.id === id);
+    return c ? c.name : "\u2014";
+  };
+  const agentName = id => {
+    const a = db.users.find(x => x.id === id);
+    return a ? a.name : "\u2014";
+  };
+  const sel = list.filter(o => !off[o.id]);
+  const tot = k => sel.reduce((s, o) => s + ((info[o.id] || {})[k] || 0), 0);
+  const ko = tot("ko");
+  const allOn = list.length > 0 && sel.length === list.length;
+  const toggleAll = () => {
+    if (allOn) {
+      const m = {};
+      list.forEach(o => m[o.id] = true);
+      setOff(m);
+    } else setOff({});
+  };
+  const zipName = "Ordini_Danea_" + from + (from === to ? "" : "_" + to) + ".zip";
+  return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    className: "page-h"
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("h1", null, "Ordini Danea"), /*#__PURE__*/React.createElement("p", null, "Scegli il giorno o il periodo, controlla gli ordini e scarica i file per Easyfatt. Un file per ogni ordine, tutti dentro un unico ZIP."))), /*#__PURE__*/React.createElement("div", {
+    className: "toolbar"
+  }, /*#__PURE__*/React.createElement("button", {
+    className: "btn light sm",
+    onClick: () => setRange(today, today)
+  }, "Oggi"), /*#__PURE__*/React.createElement("button", {
+    className: "btn light sm",
+    onClick: () => setRange(back(1), back(1))
+  }, "Ieri"), /*#__PURE__*/React.createElement("button", {
+    className: "btn light sm",
+    onClick: () => setRange(back(6), today)
+  }, "Ultimi 7 giorni"), /*#__PURE__*/React.createElement("button", {
+    className: "btn light sm",
+    onClick: () => setRange(back(29), today)
+  }, "Ultimi 30 giorni"), /*#__PURE__*/React.createElement("button", {
+    className: "btn light sm",
+    onClick: () => {
+      const r = mese(0);
+      setRange(r[0], r[1]);
+    }
+  }, "Questo mese"), /*#__PURE__*/React.createElement("button", {
+    className: "btn light sm",
+    onClick: () => {
+      const r = mese(1);
+      setRange(r[0], r[1]);
+    }
+  }, "Mese scorso"), /*#__PURE__*/React.createElement("label", {
+    className: "vlab",
+    style: {
+      alignSelf: "center",
+      margin: "0 0 0 8px"
+    }
+  }, "Dal"), /*#__PURE__*/React.createElement("input", {
+    className: "search",
+    type: "date",
+    value: from,
+    style: {
+      maxWidth: 180
+    },
+    onChange: e => {
+      setFrom(e.target.value);
+      setOff({});
+    }
+  }), /*#__PURE__*/React.createElement("label", {
+    className: "vlab",
+    style: {
+      alignSelf: "center",
+      margin: 0
+    }
+  }, "al"), /*#__PURE__*/React.createElement("input", {
+    className: "search",
+    type: "date",
+    value: to,
+    style: {
+      maxWidth: 180
+    },
+    onChange: e => {
+      setTo(e.target.value);
+      setOff({});
+    }
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "grid kpis",
+    style: {
+      marginBottom: 18
+    }
+  }, /*#__PURE__*/React.createElement(Kpi, {
+    label: "Ordini nel periodo",
+    value: list.length
+  }), /*#__PURE__*/React.createElement(Kpi, {
+    label: "Selezionati",
+    value: sel.length
+  }), /*#__PURE__*/React.createElement(Kpi, {
+    label: "Pezzi",
+    value: tot("pezzi")
+  }), /*#__PURE__*/React.createElement(Kpi, {
+    label: "Imponibile",
+    value: eur(tot("imp"))
+  })), ko > 0 && /*#__PURE__*/React.createElement("div", {
+    className: "panel",
+    style: {
+      marginBottom: 14,
+      borderColor: "var(--danger)"
+    }
+  }, /*#__PURE__*/React.createElement("strong", null, "Attenzione:"), " ", ko, " ", ko === 1 ? "riga negli ordini selezionati ha" : "righe negli ordini selezionati hanno", " la taglia o il colore mancante (escono con il trattino). Danea potrebbe rifiutarle: le trovi segnate in tabella."), /*#__PURE__*/React.createElement("div", {
+    className: "panel",
+    style: {
+      padding: 0
+    }
+  }, /*#__PURE__*/React.createElement("table", null, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("th", {
+    style: {
+      width: 34
+    }
+  }, /*#__PURE__*/React.createElement("input", {
+    type: "checkbox",
+    checked: allOn,
+    onChange: toggleAll
+  })), /*#__PURE__*/React.createElement("th", null, "#"), /*#__PURE__*/React.createElement("th", null, "Data"), /*#__PURE__*/React.createElement("th", null, "Cliente"), /*#__PURE__*/React.createElement("th", null, "Agente"), /*#__PURE__*/React.createElement("th", null, "Stato"), /*#__PURE__*/React.createElement("th", null, "Righe"), /*#__PURE__*/React.createElement("th", null, "Pezzi"), /*#__PURE__*/React.createElement("th", null, "Imponibile"), /*#__PURE__*/React.createElement("th", null))), /*#__PURE__*/React.createElement("tbody", null, list.map(o => {
+    const i = info[o.id] || {};
+    return /*#__PURE__*/React.createElement("tr", {
+      key: o.id,
+      style: off[o.id] ? {
+        opacity: .45
+      } : null
+    }, /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("input", {
+      type: "checkbox",
+      checked: !off[o.id],
+      onChange: () => setOff(m => ({
+        ...m,
+        [o.id]: !m[o.id]
+      }))
+    })), /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("strong", null, "#", o.number)), /*#__PURE__*/React.createElement("td", {
+      className: "tag-small"
+    }, o.createdAt), /*#__PURE__*/React.createElement("td", null, clientName(o.clientId)), /*#__PURE__*/React.createElement("td", {
+      className: "tag-small"
+    }, agentName(o.agentId)), /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("span", {
+      className: "status " + o.status
+    }, o.status)), /*#__PURE__*/React.createElement("td", null, i.righe, i.ko > 0 && /*#__PURE__*/React.createElement("span", {
+      className: "tag-small",
+      style: {
+        color: "var(--danger)"
+      }
+    }, " ⚠ ", i.ko)), /*#__PURE__*/React.createElement("td", null, i.pezzi), /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("strong", null, eur(i.imp || 0))), /*#__PURE__*/React.createElement("td", {
+      style: {
+        whiteSpace: "nowrap"
+      }
+    }, /*#__PURE__*/React.createElement("button", {
+      className: "btn light sm",
+      onClick: () => exportOrderGestionaleXLSX(o, db)
+    }, "⬇ Solo questo")));
+  }), list.length === 0 && /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("td", {
+    colSpan: 10,
+    className: "empty-state"
+  }, "Nessun ordine in questo periodo."))))), /*#__PURE__*/React.createElement("div", {
+    className: "toolbar",
+    style: {
+      marginTop: 14,
+      justifyContent: "space-between"
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "tag-small"
+  }, sel.length, " ordini selezionati · ", tot("righe"), " righe · ", tot("pezzi"), " pezzi · ", eur(tot("imp"))), /*#__PURE__*/React.createElement("button", {
+    className: "btn accent",
+    disabled: sel.length === 0,
+    onClick: () => exportDaneaZip(sel, db, zipName)
+  }, "⬇ Scarica per Danea (", sel.length, " ", sel.length === 1 ? "ordine" : "ordini", ")")));
+}
 function Orders({
   db,
   setDb,
@@ -3766,7 +4081,7 @@ function App() {
   const isAgent = session.role === "agent";
   const roleLabel = isAdmin ? "Amministrazione" : isDir ? "Direttore commerciale" : "Agente · " + session.zone;
   const cartCount = Object.values(cart).reduce((s, n) => s + n, 0);
-  const nav = isAdmin ? [["dashboard", "Dashboard"], ["catalogo", "Catalogo"], ["scorte", "Scorte"], ["ordini", "Ordini"], ["clienti", "Clienti"], ["agenti", "Agenti"]] : isDir ? [["dashboard", "Dashboard"], ["ordini", "Ordini agenti"], ["scorte", "Scorte"], ["agenti", "Agenti"], ["clienti", "Clienti"], ["catalogo", "Catalogo"]] : [["catalogo", "Catalogo"], ["carrello", "Carrello"], ["ordini", "I miei ordini"], ["clienti", "I miei clienti"]];
+  const nav = isAdmin ? [["dashboard", "Dashboard"], ["catalogo", "Catalogo"], ["scorte", "Scorte"], ["ordini", "Ordini"], ["danea", "Ordini Danea"], ["clienti", "Clienti"], ["agenti", "Agenti"]] : isDir ? [["dashboard", "Dashboard"], ["ordini", "Ordini agenti"], ["scorte", "Scorte"], ["agenti", "Agenti"], ["clienti", "Clienti"], ["catalogo", "Catalogo"]] : [["catalogo", "Catalogo"], ["carrello", "Carrello"], ["ordini", "I miei ordini"], ["clienti", "I miei clienti"]];
   return /*#__PURE__*/React.createElement("div", {
     className: "app"
   }, /*#__PURE__*/React.createElement("div", {
@@ -3833,6 +4148,8 @@ function App() {
     db: db,
     setDb: setDb,
     session: session
+  }), tab === "danea" && isAdmin && /*#__PURE__*/React.createElement(DaneaOrders, {
+    db: db
   }))), /*#__PURE__*/React.createElement(Footer, null), zoom && /*#__PURE__*/React.createElement("div", {
     className: "lightbox",
     onClick: () => setZoom(null)
