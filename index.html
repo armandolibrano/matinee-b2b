@@ -2271,10 +2271,11 @@ const PROVVIGIONE_DEFAULT = 12,
    Verificato sull'anagrafica Danea del 03/08/2026: le 149 righe BAG con codice a
    barre (es. BAG8000/-/nero) hanno tutte Taglia "-" e colore minuscolo. */
 const DANEA_SENZA_TAGLIA = ["BAG"];
-/* categorie o codici i cui colori in anagrafica Danea sono tutti minuscoli */
-const DANEA_CAT_COLORI_MINUSCOLI = ["BAG"];
-/* singoli colori che in anagrafica Danea sono scritti tutti minuscoli */
-const DANEA_COLORI_MINUSCOLI = ["unico"];
+/* Anagrafiche Danea controllate il 03/08/2026 (BAG, EM, CB, DM, BUM): i colori
+   sono scritti in minuscolo esattamente come sul B2B, quindi non si tocca piu'
+   il maiuscolo. Qui sotto si possono elencare i colori che in Danea sono scritti
+   in modo diverso dal B2B: chiave = colore B2B, valore = colore Danea. */
+const DANEA_COLORI_ALIAS = {};
 function daneaVar(v) {
   let code = String(v.productName || "").trim(),
     col = String(v.color || "").trim();
@@ -2301,18 +2302,11 @@ function daneaVar(v) {
     });
     if (!senza) size = "unica";
   }
-  /* i colori in Danea hanno l'iniziale maiuscola ("Maculato", "Nero"), tranne
-     quelli elencati in DANEA_COLORI_MINUSCOLI e quelli delle categorie/codici
-     elencati in DANEA_CAT_COLORI_MINUSCOLI, che restano tutti piccoli */
+  /* il colore si scrive come sta sul B2B (minuscolo, come nell'anagrafica Danea);
+     si applica solo un'eventuale correzione elencata in DANEA_COLORI_ALIAS */
   if (col) {
-    const lc = col.toLowerCase();
-    const cat2 = String(v.productCategory || "").trim().toUpperCase();
-    const cod2 = code.toUpperCase();
-    const minuscolo = DANEA_COLORI_MINUSCOLI.indexOf(lc) >= 0 || DANEA_CAT_COLORI_MINUSCOLI.some(x => {
-      const y = String(x || "").trim().toUpperCase();
-      return y && (y === cat2 || y === cod2);
-    });
-    col = minuscolo ? lc : col.charAt(0).toUpperCase() + col.slice(1);
+    const alias = DANEA_COLORI_ALIAS[code.toUpperCase() + "/" + col.toLowerCase()] || DANEA_COLORI_ALIAS[col.toLowerCase()];
+    if (alias) col = alias;
   }
   return {
     code: code,
