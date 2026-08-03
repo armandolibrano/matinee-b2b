@@ -2260,12 +2260,15 @@ function orderLinesSorted(order, vI) {
    (taglie XS/S/M/L/XL maiuscole, "unica" minuscola, colori minuscoli) e la colonna
    Taglia/Colore deve SEMPRE avere le due parti separate da "/": se una manca si mette "-".
    Senza il "/" Danea legge il colore come se fosse una taglia e rifiuta la riga.
-   Sul B2B gli articoli senza taglia hanno size "-": in Danea gli abiti (DM…) e i teli
-   hanno comunque la taglia "unica" in anagrafica, mentre le borse (BAG…) non hanno
-   proprio la taglia e vogliono "-". */
+   Sul B2B gli articoli senza taglia hanno size "-": in Danea (abiti DM…, teli e
+   borse BAG…) hanno comunque la taglia "unica" in anagrafica, quindi si esporta
+   "unica". Se un giorno un articolo in Danea non avesse proprio la riga taglia,
+   basta aggiungere il suo codice o la sua categoria in DANEA_SENZA_TAGLIA qui
+   sotto e tornera' a esportare "-". */
 const PROVVIGIONE_DEFAULT = 12,
   IVA_DEFAULT = "22";
-const DANEA_SENZA_TAGLIA = ["BAG"]; /* categorie che in Danea non hanno la taglia */
+/* categorie o codici che in Danea non hanno proprio la taglia (esportano "-") */
+const DANEA_SENZA_TAGLIA = [];
 function daneaVar(v) {
   let code = String(v.productName || "").trim(),
     col = String(v.color || "").trim();
@@ -2285,7 +2288,11 @@ function daneaVar(v) {
   if (/^(xxs|xs|s|m|l|xl|xxl|2xl|3xl|xxxl|tu|u)$/i.test(size)) size = size.toUpperCase();
   if (!size) {
     const cat = String(v.productCategory || "").trim().toUpperCase();
-    const senza = DANEA_SENZA_TAGLIA.indexOf(cat) >= 0 || /^BAG/i.test(code);
+    const cod = code.toUpperCase();
+    const senza = DANEA_SENZA_TAGLIA.some(x => {
+      const y = String(x || "").trim().toUpperCase();
+      return y && (y === cat || y === cod);
+    });
     if (!senza) size = "unica";
   }
   /* i colori in Danea hanno l'iniziale maiuscola ("Maculato", "Nero") */
