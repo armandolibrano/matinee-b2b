@@ -2360,11 +2360,16 @@ const DANEA_TAGLIA_MANCANTE = {
   "TELO": "UNICA"
 };
 const DANEA_TAGLIA_MANCANTE_DEFAULT = "unica";
-/* Anagrafiche Danea controllate il 03/08/2026 (BAG, EM, CB, DM, BUM): i colori
-   sono scritti in minuscolo esattamente come sul B2B, quindi non si tocca piu'
-   il maiuscolo. Qui sotto si possono elencare i colori che in Danea sono scritti
-   in modo diverso dal B2B: chiave = colore B2B, valore = colore Danea. */
-const DANEA_COLORI_ALIAS = {};
+/* Anagrafiche Danea controllate il 03/08/2026 (BAG, EM, CB, DM, BUM, TELO): i
+   colori sono scritti in minuscolo esattamente come sul B2B, quindi non si tocca
+   piu' il maiuscolo. Qui sotto si elencano i colori che in Danea si chiamano in
+   modo diverso dal B2B: chiave = "CODICE/colore B2B" (oppure solo "colore B2B"
+   se vale per tutti gli articoli), valore = colore come sta in Danea.
+   - BAG8011: sul B2B il colore si chiama "seppia", in Danea la stessa borsa e'
+     anagrafata "RUM". Senza questa riga l'import Danea dava errore. */
+const DANEA_COLORI_ALIAS = {
+  "BAG8011/seppia": "RUM"
+};
 function daneaVar(v) {
   let code = String(v.productName || "").trim(),
     col = String(v.color || "").trim();
