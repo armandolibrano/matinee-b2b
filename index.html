@@ -695,6 +695,7 @@ async function loadAll() {
     sdi: c.sdi || '',
     pec: c.pec || '',
     email: c.email || '',
+    phone: c.phone || '',
     contact: c.contact || '',
     billing: c.billing || '',
     agentId: c.agent_id,
@@ -745,6 +746,7 @@ async function loadAll() {
     status: o.status,
     createdAt: o.created_at,
     total: N(o.total) || 0,
+    shipping: N(o.shipping) || 0,
     lines: []
   });
   lines.forEach(l => {
@@ -782,8 +784,25 @@ async function chk(r) {
   if (r && r.error) throw new Error(r.error.message);
   return r;
 }
+/* upsert tollerante: se una colonna non esiste ancora sul database (es. orders.shipping
+   o clients.phone appena introdotte) si riprova senza quella colonna, cosi' il
+   salvataggio non si blocca mai. */
+async function upsertSoft(table, row, optional) {
+  let r = await SB.from(table).upsert(row);
+  if (r && r.error && optional && optional.some(k => String(r.error.message || "").indexOf(k) >= 0)) {
+    const clean = {
+      ...row
+    };
+    optional.forEach(k => {
+      delete clean[k];
+    });
+    console.warn(table + ": colonna mancante, salvo senza " + optional.join(", "));
+    r = await SB.from(table).upsert(clean);
+  }
+  return chk(r);
+}
 async function dbSaveOrder(o) {
-  await chk(await SB.from('orders').upsert({
+  await upsertSoft('orders', {
     id: o.id,
     number: o.number,
     agent_id: o.agentId,
@@ -795,8 +814,9 @@ async function dbSaveOrder(o) {
     note: o.note || '',
     status: o.status,
     created_at: o.createdAt,
-    total: o.total
-  }));
+    total: o.total,
+    shipping: N(o.shipping) || 0
+  }, ['shipping']);
   await chk(await SB.from('order_lines').delete().eq('order_id', o.id));
   if (o.lines.length) await chk(await SB.from('order_lines').insert(o.lines.map(l => ({
     order_id: o.id,
@@ -817,17 +837,18 @@ async function dbVariantStock(id, stock) {
   }).eq('id', id));
 }
 async function dbSaveClient(c) {
-  await chk(await SB.from('clients').upsert({
+  await upsertSoft('clients', {
     id: c.id,
     name: c.name,
     piva: c.piva || '',
     sdi: c.sdi || '',
     pec: c.pec || '',
     email: c.email || '',
+    phone: c.phone || '',
     contact: c.contact || '',
     billing: c.billing || '',
     agent_id: c.agentId || null
-  }));
+  }, ['phone']);
   await chk(await SB.from('client_shipping').delete().eq('client_id', c.id));
   if ((c.shipping || []).length) await chk(await SB.from('client_shipping').insert(c.shipping.map(s => ({
     id: s.id,
@@ -1624,6 +1645,13 @@ const PAYMENTS = ["Bonifico anticipato", "Assegno 30/60/90"];
 const DELIVERIES = ["Febbraio 2027", "Marzo 2027", "Aprile 2027", "Pronto consegna"];
 const ALTRO = "Altro (specifica)";
 const IVA = 0.22;
+/* Spese di spedizione applicate a tutti i NUOVI ordini (imponibile, + IVA).
+   Gli ordini gia' inseriti restano a 0: il valore viene salvato dentro l'ordine
+   (colonna orders.shipping) e non cambia se un domani si modifica questa cifra. */
+const SPEDIZIONE = 15;
+/* imponibile merce / spese di spedizione / imponibile totale di un ordine salvato */
+const ordMerce = o => (o.lines || []).reduce((s, l) => s + l.qty * l.price, 0);
+const ordSped = o => N(o.shipping) || 0;
 const COMPANY = {
   name: "MATINEE",
   legal: "Ocean Style S.r.l. · P.IVA 07715961210",
@@ -1670,7 +1698,12 @@ function AgentCart({
     qty,
     v: vIndex[vid]
   })).filter(l => l.v);
-  const total = lines.reduce((s, l) => s + l.qty * l.v.b2b, 0);
+  const r2 = x => Math.round(x * 100) / 100;
+  const merce = r2(lines.reduce((s, l) => s + l.qty * l.v.b2b, 0));
+  const sped = lines.length ? SPEDIZIONE : 0;
+  const total = r2(merce + sped); /* imponibile totale = merce + spedizione */
+  const totIva = r2(total * IVA);
+  const totIvato = r2(total + totIva);
   const pieces = lines.reduce((s, l) => s + l.qty, 0);
   const setQty = (vid, qty) => setCart(c => {
     const n = {
@@ -1710,6 +1743,7 @@ function AgentCart({
       note: note.trim(),
       status: "bozza",
       createdAt: new Date().toISOString().slice(0, 10),
+      shipping: sped,
       total
     };
     setDb(d => ({
@@ -1833,12 +1867,42 @@ function AgentCart({
     onChange: e => setNote(e.target.value),
     placeholder: "Note dell'agente per questo ordine…"
   }))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      margin: "12px 0",
+      borderTop: "1px solid var(--line)",
+      paddingTop: 10
+    }
+  }, /*#__PURE__*/React.createElement("div", {
     className: "between",
     style: {
-      margin: "10px 0",
-      fontSize: 16
+      fontSize: 14,
+      marginBottom: 4
     }
-  }, /*#__PURE__*/React.createElement("span", null, "Totale (", pieces, " pz)"), /*#__PURE__*/React.createElement("strong", null, eur(total))), !clientId && /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("span", null, "Merce (", pieces, " pz)"), /*#__PURE__*/React.createElement("span", null, eur(merce))), /*#__PURE__*/React.createElement("div", {
+    className: "between",
+    style: {
+      fontSize: 14,
+      marginBottom: 4
+    }
+  }, /*#__PURE__*/React.createElement("span", null, "Spese di spedizione"), /*#__PURE__*/React.createElement("span", null, eur(sped))), /*#__PURE__*/React.createElement("div", {
+    className: "between",
+    style: {
+      fontSize: 16,
+      marginBottom: 4
+    }
+  }, /*#__PURE__*/React.createElement("span", null, "Totale imponibile"), /*#__PURE__*/React.createElement("strong", null, eur(total))), /*#__PURE__*/React.createElement("div", {
+    className: "between",
+    style: {
+      fontSize: 13,
+      color: "var(--muted)",
+      marginBottom: 4
+    }
+  }, /*#__PURE__*/React.createElement("span", null, "IVA ", Math.round(IVA * 100), "%"), /*#__PURE__*/React.createElement("span", null, eur(totIva))), /*#__PURE__*/React.createElement("div", {
+    className: "between",
+    style: {
+      fontSize: 15
+    }
+  }, /*#__PURE__*/React.createElement("span", null, "Totale ivato"), /*#__PURE__*/React.createElement("strong", null, eur(totIvato)))), !clientId && /*#__PURE__*/React.createElement("div", {
     className: "hint",
     style: {
       marginBottom: 8
@@ -1890,6 +1954,7 @@ function Clients({
       sdi: "",
       pec: "",
       email: "",
+      phone: "",
       contact: "",
       billing: "",
       shipping: [],
@@ -1909,7 +1974,9 @@ function Clients({
     className: "tag-small"
   }, c.piva, c.sdi ? /*#__PURE__*/React.createElement("div", null, "SDI ", c.sdi) : null), /*#__PURE__*/React.createElement("td", null, c.billing), /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("span", {
     className: "chip"
-  }, c.shipping && c.shipping.length || 0, " indirizzi")), /*#__PURE__*/React.createElement("td", null, c.contact), isSup && /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("span", {
+  }, c.shipping && c.shipping.length || 0, " indirizzi")), /*#__PURE__*/React.createElement("td", null, c.contact, c.phone && /*#__PURE__*/React.createElement("div", {
+    className: "tag-small"
+  }, c.phone)), isSup && /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("span", {
     className: "chip"
   }, agentName(c.agentId))), /*#__PURE__*/React.createElement("td", null, !isDir && /*#__PURE__*/React.createElement("button", {
     className: "btn light sm",
@@ -2019,8 +2086,17 @@ function ClientEditor({
     label: "Referente"
   }, /*#__PURE__*/React.createElement("input", {
     value: f.contact,
-    onChange: e => set("contact", e.target.value)
-  })), isAdmin ? /*#__PURE__*/React.createElement(Field, {
+    onChange: e => set("contact", e.target.value),
+    placeholder: "Nome di chi segue il negozio"
+  })), /*#__PURE__*/React.createElement(Field, {
+    label: "Telefono"
+  }, /*#__PURE__*/React.createElement("input", {
+    value: f.phone || "",
+    onChange: e => set("phone", e.target.value),
+    placeholder: "es. 081 1234567 / 333 1234567"
+  }))), /*#__PURE__*/React.createElement("div", {
+    className: "row2"
+  }, isAdmin ? /*#__PURE__*/React.createElement(Field, {
     label: "Agente assegnato"
   }, /*#__PURE__*/React.createElement("select", {
     value: f.agentId,
@@ -2030,7 +2106,13 @@ function ClientEditor({
   }, "— seleziona —"), agents.map(a => /*#__PURE__*/React.createElement("option", {
     key: a.id,
     value: a.id
-  }, a.name, " (", a.zone, ")")))) : /*#__PURE__*/React.createElement("div", null)), /*#__PURE__*/React.createElement(Field, {
+  }, a.name, " (", a.zone, ")")))) : /*#__PURE__*/React.createElement("div", null)), /*#__PURE__*/React.createElement("div", {
+    className: "hint",
+    style: {
+      marginTop: -4,
+      marginBottom: 10
+    }
+  }, "Referente, telefono, email e PEC vengono stampati sul PDF dell'ordine: compila quelli che vuoi far vedere."), /*#__PURE__*/React.createElement(Field, {
     label: "Indirizzo di fatturazione"
   }, /*#__PURE__*/React.createElement("input", {
     value: f.billing || "",
@@ -2262,15 +2344,22 @@ function orderLinesSorted(order, vI) {
    Senza il "/" Danea legge il colore come se fosse una taglia e rifiuta la riga.
    Sul B2B gli articoli senza taglia hanno size "-": in Danea (abiti DM…, teli e
    borse BAG…) hanno comunque la taglia "unica" in anagrafica, quindi si esporta
-   "unica". Se un giorno un articolo in Danea non avesse proprio la riga taglia,
-   basta aggiungere il suo codice o la sua categoria in DANEA_SENZA_TAGLIA qui
-   sotto e tornera' a esportare "-". */
+   "unica". Ogni categoria pero' la scrive a modo suo: la tabella
+   DANEA_TAGLIA_MANCANTE qui sotto dice, per categoria o per codice, cosa
+   scrivere quando sul B2B la taglia non c'e' ("" = trattino). */
 const PROVVIGIONE_DEFAULT = 12,
   IVA_DEFAULT = "22";
-/* categorie o codici che in Danea non hanno proprio la taglia (esportano "-").
-   Verificato sull'anagrafica Danea del 03/08/2026: le 149 righe BAG con codice a
-   barre (es. BAG8000/-/nero) hanno tutte Taglia "-" e colore minuscolo. */
-const DANEA_SENZA_TAGLIA = ["BAG"];
+/* Cosa scrivere nella colonna Taglia quando sul B2B la variante non ha taglia.
+   Chiave = categoria B2B (maiuscola) oppure codice articolo. "" = "-".
+   Verificato sulle anagrafiche Danea del 03/08/2026:
+     BAG  -> le 149 righe con codice a barre (es. BAG8000/-/nero) hanno Taglia "-"
+     TELO -> le 31 righe con codice a barre hanno Taglia "UNICA" MAIUSCOLA
+     resto (abiti DM...) -> "unica" minuscola */
+const DANEA_TAGLIA_MANCANTE = {
+  "BAG": "",
+  "TELO": "UNICA"
+};
+const DANEA_TAGLIA_MANCANTE_DEFAULT = "unica";
 /* Anagrafiche Danea controllate il 03/08/2026 (BAG, EM, CB, DM, BUM): i colori
    sono scritti in minuscolo esattamente come sul B2B, quindi non si tocca piu'
    il maiuscolo. Qui sotto si possono elencare i colori che in Danea sono scritti
@@ -2296,11 +2385,16 @@ function daneaVar(v) {
   if (!size) {
     const cat = String(v.productCategory || "").trim().toUpperCase();
     const cod = code.toUpperCase();
-    const senza = DANEA_SENZA_TAGLIA.some(x => {
-      const y = String(x || "").trim().toUpperCase();
-      return y && (y === cat || y === cod);
+    let mancante = DANEA_TAGLIA_MANCANTE_DEFAULT,
+      perCod = null,
+      perCat = null;
+    Object.keys(DANEA_TAGLIA_MANCANTE).forEach(k => {
+      const y = String(k || "").trim().toUpperCase();
+      if (!y) return;
+      if (y === cod) perCod = DANEA_TAGLIA_MANCANTE[k];else if (y === cat) perCat = DANEA_TAGLIA_MANCANTE[k];
     });
-    if (!senza) size = "unica";
+    if (perCod !== null) mancante = perCod;else if (perCat !== null) mancante = perCat;
+    size = String(mancante || "");
   }
   /* il colore si scrive come sta sul B2B (minuscolo, come nell'anagrafica Danea);
      si applica solo un'eventuale correzione elencata in DANEA_COLORI_ALIAS */
@@ -2485,10 +2579,13 @@ function buildEmailBody(order, db) {
     return `- ${v.productName || "?"} | ${vlabel(v)} | q.tà ${l.qty} | ${eur(l.price)} | ${eur(l.qty * l.price)}`;
   }).join("\n");
   const r2 = x => Math.round(x * 100) / 100;
-  const imp = r2(order.lines.reduce((s, l) => s + l.qty * l.price, 0));
+  const merce = r2(ordMerce(order));
+  const sped = r2(ordSped(order));
+  const imp = r2(merce + sped);
   const iv = r2(imp * IVA);
   const tiv = r2(imp + iv);
-  return `Conferma d'ordine ${COMPANY.name} n. ${order.number} del ${order.createdAt}\n\n` + `Cliente: ${c.name || ""}\nP.IVA: ${c.piva || ""}${c.sdi ? " · SDI: " + c.sdi : ""}\nAgente: ${a.name || ""}${a.zone ? " (" + a.zone + ")" : ""}\n\n` + `Articoli:\n${rows}\n\nTotale imponibile: ${eur(imp)}\nTotale IVA ${Math.round(IVA * 100)}%: ${eur(iv)}\nTOTALE IVATO: ${eur(tiv)}\n\nPagamento: ${order.payment}\nConsegna: ${order.delivery}\n` + (order.note ? `Note: ${order.note}\n` : "") + `\n${COMPANY.name} — ${COMPANY.addr} — ${COMPANY.email}`;
+  const contatti = [c.contact && "Referente: " + c.contact, c.phone && "Tel.: " + c.phone, c.email && "Email: " + c.email, c.pec && "PEC: " + c.pec].filter(Boolean).join("\n");
+  return `Conferma d'ordine ${COMPANY.name} n. ${order.number} del ${order.createdAt}\n\n` + `Cliente: ${c.name || ""}\nP.IVA: ${c.piva || ""}${c.sdi ? " · SDI: " + c.sdi : ""}\n` + (contatti ? contatti + "\n" : "") + `Agente: ${a.name || ""}${a.zone ? " (" + a.zone + ")" : ""}\n\n` + `Articoli:\n${rows}\n\nTotale merce: ${eur(merce)}\n` + (sped > 0 ? `Spese di spedizione: ${eur(sped)}\n` : "") + `Totale imponibile: ${eur(imp)}\nTotale IVA ${Math.round(IVA * 100)}%: ${eur(iv)}\nTOTALE IVATO: ${eur(tiv)}\n\nPagamento: ${order.payment}\nConsegna: ${order.delivery}\n` + (order.note ? `Note: ${order.note}\n` : "") + `\n${COMPANY.name} — ${COMPANY.addr} — ${COMPANY.email}`;
 }
 function genOrderPDF(order, db) {
   if (!(window.jspdf && window.jspdf.jsPDF)) {
@@ -2545,7 +2642,8 @@ function genOrderPDF(order, db) {
   doc.setFont("helvetica", "normal");
   doc.setFontSize(9.5);
   let yc = y + 15;
-  const cl = [c.name, "P.IVA " + (c.piva || "—") + (c.sdi ? "  ·  SDI " + c.sdi : ""), c.pec && "PEC " + c.pec, c.billing && "Fatt.: " + c.billing, c.contact && "Rif. " + c.contact, c.email].filter(Boolean);
+  /* contatti del negozio: si stampano solo quelli che l'agente ha inserito in anagrafica */
+  const cl = [c.name, "P.IVA " + (c.piva || "—") + (c.sdi ? "  ·  SDI " + c.sdi : ""), c.pec && "PEC " + c.pec, c.billing && "Fatt.: " + c.billing, c.contact && "Rif. " + c.contact, c.phone && "Tel. " + c.phone, c.email && "Email " + c.email].filter(Boolean);
   cl.forEach((t, i) => doc.text(String(t), M, yc + i * 13));
   const ag = [a.name, a.zone && "Zona " + a.zone].filter(Boolean);
   ag.forEach((t, i) => doc.text(String(t), W / 2, yc + i * 13));
@@ -2588,7 +2686,9 @@ function genOrderPDF(order, db) {
   y = doc.lastAutoTable.finalY + 16;
   const pieces = order.lines.reduce((s, l) => s + l.qty, 0);
   const r2 = x => Math.round(x * 100) / 100;
-  const imponibile = r2(order.lines.reduce((s, l) => s + l.qty * l.price, 0));
+  const merce = r2(ordMerce(order));
+  const sped = r2(ordSped(order));
+  const imponibile = r2(merce + sped);
   const iva = r2(imponibile * IVA);
   const ivato = r2(imponibile + iva);
   const LBL = W - M - 150;
@@ -2597,6 +2697,22 @@ function genOrderPDF(order, db) {
   doc.text("Totale " + pieces + " pz", M, y);
   doc.setFont("helvetica", "normal");
   doc.setFontSize(10);
+  if (sped > 0) {
+    doc.text("Totale merce", LBL, y, {
+      align: "right"
+    });
+    doc.text(eur(merce), W - M, y, {
+      align: "right"
+    });
+    y += 15;
+    doc.text("Spese di spedizione", LBL, y, {
+      align: "right"
+    });
+    doc.text(eur(sped), W - M, y, {
+      align: "right"
+    });
+    y += 15;
+  }
   doc.text("Totale imponibile", LBL, y, {
     align: "right"
   });
@@ -3160,7 +3276,10 @@ function OrderEditor({
     ...l,
     qty: Math.max(0, qty)
   } : l).filter(l => l.qty > 0));
-  const total = lines.reduce((s, l) => s + l.qty * l.price, 0);
+  const r2 = x => Math.round(x * 100) / 100;
+  const merce = r2(lines.reduce((s, l) => s + l.qty * l.price, 0));
+  const sped = N(order.shipping) || 0; /* la spedizione dell'ordine non si tocca */
+  const total = r2(merce + sped);
   /* ---- aggiunta articoli in modifica ordine ---- */
   const [addQ, setAddQ] = useState("");
   const addLine = (v, n) => setLines(ls => {
@@ -3205,6 +3324,7 @@ function OrderEditor({
       note,
       shipId,
       shipTo: ship ? ship.address : "",
+      shipping: sped,
       total
     };
     setDb(d => ({
@@ -3393,12 +3513,27 @@ function OrderEditor({
     onChange: e => setNote(e.target.value),
     placeholder: "Note per l'amministrazione…"
   })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 6
+    }
+  }, sped > 0 && /*#__PURE__*/React.createElement("div", {
     className: "between",
     style: {
-      marginTop: 6,
+      fontSize: 14,
+      marginBottom: 4
+    }
+  }, /*#__PURE__*/React.createElement("span", null, "Merce"), /*#__PURE__*/React.createElement("span", null, eur(merce))), sped > 0 && /*#__PURE__*/React.createElement("div", {
+    className: "between",
+    style: {
+      fontSize: 14,
+      marginBottom: 4
+    }
+  }, /*#__PURE__*/React.createElement("span", null, "Spese di spedizione"), /*#__PURE__*/React.createElement("span", null, eur(sped))), /*#__PURE__*/React.createElement("div", {
+    className: "between",
+    style: {
       fontSize: 16
     }
-  }, /*#__PURE__*/React.createElement("span", null, "Totale"), /*#__PURE__*/React.createElement("strong", null, eur(total))));
+  }, /*#__PURE__*/React.createElement("span", null, "Totale imponibile"), /*#__PURE__*/React.createElement("strong", null, eur(total)))));
 }
 
 /* ---------- DASHBOARD (direttore/admin) ---------- */
