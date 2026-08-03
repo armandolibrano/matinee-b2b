@@ -2269,6 +2269,8 @@ const PROVVIGIONE_DEFAULT = 12,
   IVA_DEFAULT = "22";
 /* categorie o codici che in Danea non hanno proprio la taglia (esportano "-") */
 const DANEA_SENZA_TAGLIA = [];
+/* colori che in anagrafica Danea sono scritti tutti minuscoli */
+const DANEA_COLORI_MINUSCOLI = ["unico"];
 function daneaVar(v) {
   let code = String(v.productName || "").trim(),
     col = String(v.color || "").trim();
@@ -2295,8 +2297,12 @@ function daneaVar(v) {
     });
     if (!senza) size = "unica";
   }
-  /* i colori in Danea hanno l'iniziale maiuscola ("Maculato", "Nero") */
-  if (col) col = col.charAt(0).toUpperCase() + col.slice(1);
+  /* i colori in Danea hanno l'iniziale maiuscola ("Maculato", "Nero"),
+     tranne quelli elencati in DANEA_COLORI_MINUSCOLI che restano tutti piccoli */
+  if (col) {
+    const lc = col.toLowerCase();
+    col = DANEA_COLORI_MINUSCOLI.indexOf(lc) >= 0 ? lc : col.charAt(0).toUpperCase() + col.slice(1);
+  }
   return {
     code: code,
     col: col,
