@@ -669,16 +669,33 @@ function cmpVariant(a, b) {
   if (r !== 0) return r;
   return String(a.size || "").localeCompare(String(b.size || ""), "it");
 }
+/* Lettura a pagine da 1000 righe. L'ordinamento esplicito e' indispensabile:
+   senza ORDER BY il database non garantisce la stessa sequenza tra una pagina
+   e l'altra e su tabelle grandi (order_lines, variants) qualche riga potrebbe
+   sparire o comparire due volte. Se la colonna non esiste si riparte senza. */
 async function fetchAll(table) {
   let out = [],
     from = 0,
-    step = 1000;
+    step = 1000,
+    ordina = true;
   while (true) {
+    let q = SB.from(table).select('*');
+    if (ordina) q = q.order('id', {
+      ascending: true
+    });
     const {
       data,
       error
-    } = await SB.from(table).select('*').range(from, from + step - 1);
-    if (error) throw new Error(table + ": " + error.message);
+    } = await q.range(from, from + step - 1);
+    if (error) {
+      if (ordina) {
+        ordina = false;
+        out = [];
+        from = 0;
+        continue;
+      }
+      throw new Error(table + ": " + error.message);
+    }
     out = out.concat(data || []);
     if (!data || data.length < step) break;
     from += step;
@@ -777,8 +794,58 @@ async function loadAll() {
 function persist(p) {
   return Promise.resolve().then(() => p).catch(e => {
     console.error(e);
-    alert("Errore di salvataggio sul database: " + (e.message || e));
+    alert("Errore di salvataggio sul database: " + (e.message || e) + "\n\nATTENZIONE: la modifica NON e' stata salvata. Se il messaggio parla di permessi o di sessione, esci e rientra con le tue credenziali, poi riprova.");
   });
+}
+/* ---------- sicurezza dei salvataggi ----------
+   Incidente del 4 agosto 2026 (agente Studio 51): dopo molte ore di lavoro il
+   token di accesso era scaduto; le policy RLS rifiutavano la scrittura ma
+   l'applicazione mostrava comunque l'ordine come confermato e svuotava il
+   carrello, cosi' il lavoro spariva al primo ricaricamento della pagina.
+   Da qui in avanti: prima di ogni scrittura importante si verifica (e se serve
+   si rinnova) la sessione, si ASPETTA la conferma del database e in caso di
+   errore non si perde nulla. */
+async function sessioneViva() {
+  try {
+    const {
+      data
+    } = await SB.auth.getSession();
+    let s = data && data.session;
+    if (!s) return false;
+    const scadeTra = (s.expires_at || 0) * 1000 - Date.now();
+    if (scadeTra < 120000) {
+      /* meno di 2 minuti: rinnovo subito */
+      const r = await SB.auth.refreshSession();
+      if (r.error || !r.data || !r.data.session) return false;
+      s = r.data.session;
+    }
+    return !!s;
+  } catch (e) {
+    console.error(e);
+    return false;
+  }
+}
+const MSG_SESSIONE = "Sessione scaduta: il database ha rifiutato la scrittura. Premi «Esci», rientra con le tue credenziali e riprova — quello che hai inserito è rimasto in pagina.";
+/* Copia di sicurezza locale dell'ordine in corso di salvataggio: resta sul
+   computer dell'agente finche' il database non ha confermato la scrittura. */
+const BOZZA_KEY = "matinee_b2b_ordine_non_salvato";
+function bozzaSalva(o) {
+  try {
+    localStorage.setItem(BOZZA_KEY, JSON.stringify(o));
+  } catch (e) {}
+}
+function bozzaPulisci() {
+  try {
+    localStorage.removeItem(BOZZA_KEY);
+  } catch (e) {}
+}
+function bozzaLeggi() {
+  try {
+    const t = localStorage.getItem(BOZZA_KEY);
+    return t ? JSON.parse(t) : null;
+  } catch (e) {
+    return null;
+  }
 }
 async function chk(r) {
   if (r && r.error) throw new Error(r.error.message);
@@ -1675,6 +1742,8 @@ function AgentCart({
   const [delivery, setDelivery] = useState(DELIVERIES[1]);
   const [customDelivery, setCustomDelivery] = useState("");
   const [note, setNote] = useState("");
+  const [salvo, setSalvo] = useState(false);
+  const [errSalva, setErrSalva] = useState("");
   const effPayment = payment === ALTRO ? customPayment.trim() : payment;
   const effDelivery = delivery === ALTRO ? customDelivery.trim() : delivery;
   const vIndex = useMemo(() => {
@@ -1713,46 +1782,68 @@ function AgentCart({
     return n;
   });
   const canSave = clientId && lines.length > 0 && effPayment && effDelivery;
+  /* Se un tentativo fallisce teniamo id e numero gia' assegnati: al nuovo
+     tentativo si riusa lo stesso numero (upsert), cosi' non si "brucia" un
+     numero d'ordine ad ogni riprova. */
+  const inSospeso = useRef(null);
   const confirm = async () => {
-    let number = null;
+    if (salvo) return;
+    setSalvo(true);
+    setErrSalva("");
     try {
-      const r = await SB.rpc('next_order_number');
-      if (r.error) throw new Error(r.error.message);
-      number = Number(r.data);
+      if (!(await sessioneViva())) throw new Error(MSG_SESSIONE);
+      let id = inSospeso.current ? inSospeso.current.id : null;
+      let number = inSospeso.current ? inSospeso.current.number : null;
+      if (number == null) {
+        const r = await SB.rpc('next_order_number');
+        if (r.error) throw new Error("numero d'ordine non generato — " + r.error.message);
+        number = Number(r.data);
+        id = uidNew("o", db.orders);
+        inSospeso.current = {
+          id,
+          number
+        };
+      }
+      const ship = ships.find(s => s.id === shipId) || ships[0];
+      const order = {
+        id,
+        number,
+        agentId: session.id,
+        clientId,
+        lines: lines.map(l => ({
+          variantId: l.vid,
+          productId: l.v.productId,
+          qty: l.qty,
+          price: l.v.b2b
+        })),
+        payment: effPayment,
+        delivery: effDelivery,
+        shipId: ship ? ship.id : "",
+        shipTo: ship ? ship.address : "",
+        note: note.trim(),
+        status: "bozza",
+        createdAt: new Date().toISOString().slice(0, 10),
+        shipping: sped,
+        total
+      };
+      bozzaSalva(order); /* copia locale prima di scrivere */
+      await dbSaveOrder(order); /* si ASPETTA la risposta del database */
+      const ver = await SB.from('orders').select('id').eq('id', order.id);
+      if (!ver.error && (!ver.data || ver.data.length === 0)) throw new Error("il database non ha registrato l'ordine (permessi o sessione).");
+      bozzaPulisci();
+      inSospeso.current = null;
+      setDb(d => ({
+        ...d,
+        orders: [order, ...d.orders.filter(x => x.id !== order.id)]
+      }));
+      setCart({});
+      goOrders();
     } catch (e) {
       console.error(e);
-      alert("Impossibile generare il numero d'ordine: " + (e.message || e));
-      return;
+      setErrSalva("ORDINE NON SALVATO — " + (e.message || e));
+    } finally {
+      setSalvo(false);
     }
-    const ship = ships.find(s => s.id === shipId) || ships[0];
-    const order = {
-      id: uidNew("o", db.orders),
-      number,
-      agentId: session.id,
-      clientId,
-      lines: lines.map(l => ({
-        variantId: l.vid,
-        productId: l.v.productId,
-        qty: l.qty,
-        price: l.v.b2b
-      })),
-      payment: effPayment,
-      delivery: effDelivery,
-      shipId: ship ? ship.id : "",
-      shipTo: ship ? ship.address : "",
-      note: note.trim(),
-      status: "bozza",
-      createdAt: new Date().toISOString().slice(0, 10),
-      shipping: sped,
-      total
-    };
-    setDb(d => ({
-      ...d,
-      orders: [order, ...d.orders]
-    }));
-    persist(dbSaveOrder(order));
-    setCart({});
-    goOrders();
   };
   return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
     className: "page-h"
@@ -1907,14 +1998,30 @@ function AgentCart({
     style: {
       marginBottom: 8
     }
-  }, "Seleziona un cliente per confermare."), /*#__PURE__*/React.createElement("button", {
+  }, "Seleziona un cliente per confermare."), errSalva && /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 8,
+      padding: "10px 12px",
+      border: "2px solid var(--danger)",
+      borderRadius: 10,
+      color: "var(--danger)",
+      fontSize: 13,
+      fontWeight: 600,
+      lineHeight: 1.45
+    }
+  }, errSalva, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontWeight: 400,
+      marginTop: 6
+    }
+  }, "Il carrello non è stato toccato: nulla è andato perso. Controlla la connessione, se il messaggio parla di sessione premi «Esci» e rientra, poi premi di nuovo «Conferma ordine» (l'ordine manterrà lo stesso numero).")), /*#__PURE__*/React.createElement("button", {
     className: "btn",
     style: {
       width: "100%"
     },
-    disabled: !canSave,
+    disabled: !canSave || salvo,
     onClick: confirm
-  }, "Conferma ordine")))));
+  }, salvo ? "Salvataggio in corso…" : "Conferma ordine")))));
 }
 
 /* ---------- CLIENTI ---------- */
@@ -1932,7 +2039,11 @@ function Clients({
     const a = db.users.find(u => u.id === id);
     return a ? a.name : "—";
   };
-  const save = cl => {
+  /* Si aspetta la conferma del database: se la scrittura fallisce la scheda
+     resta aperta con i dati dentro (niente anagrafiche perse). */
+  const save = async cl => {
+    if (!(await sessioneViva())) throw new Error(MSG_SESSIONE);
+    await dbSaveClient(cl);
     setDb(d => {
       const ex = d.clients.some(x => x.id === cl.id);
       return {
@@ -1940,7 +2051,6 @@ function Clients({
         clients: ex ? d.clients.map(x => x.id === cl.id ? cl : x) : [...d.clients, cl]
       };
     });
-    persist(dbSaveClient(cl));
     setEditing(null);
   };
   return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
@@ -2030,6 +2140,27 @@ function ClientEditor({
     ...s,
     shipping: s.shipping.filter(x => x.id !== id)
   }));
+  const [salvo, setSalvo] = useState(false);
+  const [errSalva, setErrSalva] = useState("");
+  const doSave = async () => {
+    if (salvo) return;
+    setSalvo(true);
+    setErrSalva("");
+    try {
+      await onSave({
+        ...f,
+        name: f.name.trim(),
+        shipping: (f.shipping || []).filter(s => s.address.trim()),
+        _new: undefined
+      });
+    } catch (e) {
+      console.error(e);
+      setErrSalva("ANAGRAFICA NON SALVATA — " + (e.message || e));
+      setSalvo(false);
+      return;
+    }
+    setSalvo(false);
+  };
   return /*#__PURE__*/React.createElement(Modal, {
     wide: true,
     title: client._new ? "Nuovo cliente" : "Modifica cliente",
@@ -2039,15 +2170,26 @@ function ClientEditor({
       onClick: onClose
     }, "Annulla"), /*#__PURE__*/React.createElement("button", {
       className: "btn",
-      disabled: !f.name.trim() || !f.agentId,
-      onClick: () => onSave({
-        ...f,
-        name: f.name.trim(),
-        shipping: (f.shipping || []).filter(s => s.address.trim()),
-        _new: undefined
-      })
-    }, "Salva"))
-  }, /*#__PURE__*/React.createElement(Field, {
+      disabled: salvo || !f.name.trim() || !f.agentId,
+      onClick: doSave
+    }, salvo ? "Salvataggio…" : "Salva"))
+  }, errSalva && /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 12,
+      padding: "10px 12px",
+      border: "2px solid var(--danger)",
+      borderRadius: 10,
+      color: "var(--danger)",
+      fontSize: 13,
+      fontWeight: 600,
+      lineHeight: 1.45
+    }
+  }, errSalva, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontWeight: 400,
+      marginTop: 6
+    }
+  }, "I dati sono ancora qui: non chiudere la scheda. Se il messaggio parla di sessione, apri una seconda finestra, rientra e poi premi di nuovo «Salva».")), /*#__PURE__*/React.createElement(Field, {
     label: "Ragione sociale"
   }, /*#__PURE__*/React.createElement("input", {
     value: f.name,
@@ -3318,7 +3460,12 @@ function OrderEditor({
   const effPayment = payment === ALTRO ? customPayment.trim() : payment;
   const effDelivery = delivery === ALTRO ? customDelivery.trim() : delivery;
   const canSave = clientId && lines.length > 0 && effPayment && effDelivery;
-  const save = () => {
+  const [salvo, setSalvo] = useState(false);
+  const [errSalva, setErrSalva] = useState("");
+  const save = async () => {
+    if (salvo) return;
+    setSalvo(true);
+    setErrSalva("");
     const ship = ships.find(s => s.id === shipId);
     const upd = {
       ...order,
@@ -3332,12 +3479,21 @@ function OrderEditor({
       shipping: sped,
       total
     };
-    setDb(d => ({
-      ...d,
-      orders: d.orders.map(o => o.id === order.id ? upd : o)
-    }));
-    persist(dbSaveOrder(upd));
-    onClose();
+    try {
+      if (!(await sessioneViva())) throw new Error(MSG_SESSIONE);
+      await dbSaveOrder(upd); /* si aspetta la conferma del database */
+      setDb(d => ({
+        ...d,
+        orders: d.orders.map(o => o.id === order.id ? upd : o)
+      }));
+      onClose();
+    } catch (e) {
+      console.error(e);
+      setErrSalva("MODIFICHE NON SALVATE — " + (e.message || e));
+      setSalvo(false);
+      return;
+    }
+    setSalvo(false);
   };
   return /*#__PURE__*/React.createElement(Modal, {
     wide: true,
@@ -3349,10 +3505,26 @@ function OrderEditor({
       onClick: onClose
     }, "Annulla"), /*#__PURE__*/React.createElement("button", {
       className: "btn",
-      disabled: !canSave,
+      disabled: !canSave || salvo,
       onClick: save
-    }, "Salva modifiche"))
-  }, /*#__PURE__*/React.createElement("div", {
+    }, salvo ? "Salvataggio…" : "Salva modifiche"))
+  }, errSalva && /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 12,
+      padding: "10px 12px",
+      border: "2px solid var(--danger)",
+      borderRadius: 10,
+      color: "var(--danger)",
+      fontSize: 13,
+      fontWeight: 600,
+      lineHeight: 1.45
+    }
+  }, errSalva, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontWeight: 400,
+      marginTop: 6
+    }
+  }, "Le modifiche sono ancora in questa scheda: non chiuderla. Se il messaggio parla di sessione, esci e rientra, poi premi di nuovo «Salva modifiche».")), /*#__PURE__*/React.createElement("div", {
     className: "row2"
   }, /*#__PURE__*/React.createElement(Field, {
     label: "Cliente"
@@ -4118,6 +4290,76 @@ function Stock({
   }, "Mostrate 200 di ", filtered.length, ". Usa la ricerca per filtrare.")));
 }
 
+/* ---------- recupero di un ordine rimasto fuori dal database ---------- */
+function RecuperoOrdine({
+  ordine,
+  db,
+  setDb,
+  onChiudi
+}) {
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const cliente = (db.clients.find(c => c.id === ordine.clientId) || {}).name || "cliente non trovato";
+  const invia = async () => {
+    setBusy(true);
+    setMsg("");
+    try {
+      if (!(await sessioneViva())) throw new Error(MSG_SESSIONE);
+      await dbSaveOrder(ordine);
+      bozzaPulisci();
+      setDb(d => ({
+        ...d,
+        orders: [ordine, ...d.orders.filter(x => x.id !== ordine.id)]
+      }));
+      onChiudi();
+    } catch (e) {
+      console.error(e);
+      setMsg("Non è stato possibile salvarlo: " + (e.message || e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return /*#__PURE__*/React.createElement("div", {
+    className: "panel",
+    style: {
+      margin: "14px 18px 0",
+      border: "2px solid var(--danger)"
+    }
+  }, /*#__PURE__*/React.createElement("strong", {
+    style: {
+      color: "var(--danger)"
+    }
+  }, "Trovato un ordine confermato ma mai arrivato al database"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 6,
+      fontSize: 14
+    }
+  }, "Ordine n. ", ordine.number, " · ", cliente, " · ", ordine.lines.length, " righe · ", eur(ordine.total), " · del ", ordine.createdAt), msg && /*#__PURE__*/React.createElement("div", {
+    style: {
+      color: "var(--danger)",
+      marginTop: 8,
+      fontSize: 13,
+      fontWeight: 600
+    }
+  }, msg), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 10,
+      display: "flex",
+      gap: 8
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    className: "btn",
+    disabled: busy,
+    onClick: invia
+  }, busy ? "Invio in corso…" : "Salva adesso sul database"), /*#__PURE__*/React.createElement("button", {
+    className: "btn light",
+    disabled: busy,
+    onClick: () => {
+      bozzaPulisci();
+      onChiudi();
+    }
+  }, "Scarta")));
+}
 /* ---------- APP ---------- */
 function App() {
   const [boot, setBoot] = useState("check"); // check | login | loading | ready | error
@@ -4160,6 +4402,33 @@ function App() {
       if (data && data.session) start();else setBoot("login");
     }).catch(() => setBoot("login"));
   }, []);
+  /* Ordine rimasto sul computer e mai arrivato al database (vedi incidente 04/08/2026) */
+  const [daRecuperare, setDaRecuperare] = useState(null);
+  useEffect(() => {
+    if (boot !== "ready") return;
+    const o = bozzaLeggi();
+    if (o && o.id && o.agentId === (session && session.id) && !(db && db.orders.some(x => x.id === o.id))) setDaRecuperare(o);else if (o && db && db.orders.some(x => x.id === o.id)) bozzaPulisci();
+  }, [boot]);
+  /* Controllo periodico della sessione: se il token e' morto lo diciamo subito,
+     invece di lasciar lavorare l'agente per ore contro un database che rifiuta. */
+  const [sessScaduta, setSessScaduta] = useState(false);
+  useEffect(() => {
+    if (boot !== "ready") return;
+    let vivo = true;
+    const controlla = async () => {
+      const ok = await sessioneViva();
+      if (vivo) setSessScaduta(!ok);
+    };
+    controlla();
+    const t = setInterval(controlla, 240000); /* ogni 4 minuti */
+    const onFocus = () => controlla();
+    window.addEventListener("focus", onFocus);
+    return () => {
+      vivo = false;
+      clearInterval(t);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [boot]);
   const login = async (u, p) => {
     setErr("");
     const email = String(u || "").trim().toLowerCase() + EMAIL_DOMAIN;
@@ -4244,7 +4513,20 @@ function App() {
   }, roleLabel)), /*#__PURE__*/React.createElement("button", {
     className: "btn ghost sm",
     onClick: logout
-  }, "Esci"))), /*#__PURE__*/React.createElement("div", {
+  }, "Esci"))), sessScaduta && /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: "var(--danger)",
+      color: "#fff",
+      padding: "10px 18px",
+      fontSize: 14,
+      fontWeight: 600
+    }
+  }, "Sessione scaduta — da adesso il database rifiuta i salvataggi. Premi «Esci» in alto a destra e rientra con le tue credenziali prima di continuare a lavorare."), daRecuperare && /*#__PURE__*/React.createElement(RecuperoOrdine, {
+    ordine: daRecuperare,
+    db: db,
+    setDb: setDb,
+    onChiudi: () => setDaRecuperare(null)
+  }), /*#__PURE__*/React.createElement("div", {
     className: "shell"
   }, /*#__PURE__*/React.createElement("div", {
     className: "side"
