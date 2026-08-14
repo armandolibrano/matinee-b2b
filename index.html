@@ -2734,7 +2734,70 @@ function buildEmailBody(order, db) {
   const contatti = [c.contact && "Referente: " + c.contact, c.phone && "Tel.: " + c.phone, c.email && "Email: " + c.email, c.pec && "PEC: " + c.pec].filter(Boolean).join("\n");
   return `Conferma d'ordine ${COMPANY.name} n. ${order.number} del ${order.createdAt}\n\n` + `Cliente: ${c.name || ""}\nP.IVA: ${c.piva || ""}${c.sdi ? " · SDI: " + c.sdi : ""}\n` + (contatti ? contatti + "\n" : "") + `Agente: ${a.name || ""}${a.zone ? " (" + a.zone + ")" : ""}\n\n` + `Articoli:\n${rows}\n\nTotale merce: ${eur(merce)}\n` + (sped > 0 ? `Spese di spedizione: ${eur(sped)}\n` : "") + `Totale imponibile: ${eur(imp)}\nTotale IVA ${Math.round(IVA * 100)}%: ${eur(iv)}\nTOTALE IVATO: ${eur(tiv)}\n\nPagamento: ${order.payment}\nConsegna: ${order.delivery}\n` + (order.note ? `Note: ${order.note}\n` : "") + `\n${COMPANY.name} — ${COMPANY.addr} — ${COMPANY.email}`;
 }
-function genOrderPDF(order, db) {
+/* ---------- foto degli articoli dentro il PDF ----------
+   Le immagini stanno sul CDN esterno: vanno scaricate, rimpicciolite e
+   incorporate nel file. Se una foto non arriva si prosegue senza. */
+const __fotoCache = {};
+function fotoUrlPiccola(url, px) {
+  try {
+    const u = new URL(url, location.href);
+    if (/shopify/i.test(u.hostname)) u.searchParams.set("width", String(px));
+    return u.toString();
+  } catch (e) {
+    return url;
+  }
+}
+function fotoDataURL(url, lato) {
+  if (!url) return Promise.resolve(null);
+  const key = url + "@" + lato;
+  if (__fotoCache[key] !== undefined) return Promise.resolve(__fotoCache[key]);
+  return new Promise(res => {
+    let fatto = false;
+    const chiudi = v => {
+      if (fatto) return;
+      fatto = true;
+      __fotoCache[key] = v;
+      res(v);
+    };
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => {
+      try {
+        const s = Math.min(lato / img.width, lato / img.height, 1);
+        const cv = document.createElement("canvas");
+        cv.width = Math.max(1, Math.round(img.width * s));
+        cv.height = Math.max(1, Math.round(img.height * s));
+        const ctx = cv.getContext("2d");
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, cv.width, cv.height);
+        ctx.drawImage(img, 0, 0, cv.width, cv.height);
+        chiudi({
+          dati: cv.toDataURL("image/jpeg", 0.72),
+          w: cv.width,
+          h: cv.height
+        });
+      } catch (e) {
+        console.error(e);
+        chiudi(null);
+      }
+    };
+    img.onerror = () => chiudi(null);
+    setTimeout(() => chiudi(null), 15000);
+    img.src = url;
+  });
+}
+/* Wrapper usato dai pulsanti: evita il doppio clic e segnala gli errori. */
+function scaricaPDFOrdine(order, db, conFoto) {
+  if (scaricaPDFOrdine.__busy) return;
+  scaricaPDFOrdine.__busy = true;
+  Promise.resolve().then(() => genOrderPDF(order, db, conFoto)).catch(e => {
+    console.error(e);
+    alert("Non e' stato possibile generare il PDF: " + (e.message || e));
+  }).then(() => {
+    scaricaPDFOrdine.__busy = false;
+  });
+}
+async function genOrderPDF(order, db, conFoto) {
   if (!(window.jspdf && window.jspdf.jsPDF)) {
     alert("Modulo PDF non caricato, riprova tra un istante.");
     return;
@@ -2795,13 +2858,74 @@ function genOrderPDF(order, db) {
   const ag = [a.name, a.zone && "Zona " + a.zone].filter(Boolean);
   ag.forEach((t, i) => doc.text(String(t), W / 2, yc + i * 13));
   y = yc + Math.max(cl.length, ag.length) * 13 + 12;
-  const body = orderLinesSorted(order, vI).map(l => {
+  const righe = orderLinesSorted(order, vI);
+  /* Le righe arrivano gia' ordinate per articolo e colore: le taglie dello stesso
+     articolo/colore sono quindi consecutive e formano un gruppo con una sola foto. */
+  const gruppi = [];
+  righe.forEach((l, i) => {
+    const v = vI[l.variantId] || {};
+    const k = (v.productId || "") + "|" + (v.color || "");
+    const ultimo = gruppi[gruppi.length - 1];
+    if (ultimo && ultimo.chiave === k) ultimo.n++;else gruppi.push({
+      chiave: k,
+      n: 1,
+      inizio: i,
+      foto: v.photo || "",
+      dati: null
+    });
+  });
+  if (conFoto) await Promise.all(gruppi.map(async g => {
+    g.dati = await fotoDataURL(fotoUrlPiccola(g.foto, 240), 120);
+  }));
+  const conFotoEff = !!conFoto && gruppi.some(g => g.dati);
+  if (conFoto && !conFotoEff) alert("Non e' stato possibile scaricare le foto degli articoli: il PDF viene generato senza immagini.");
+  const cella = l => {
     const v = vI[l.variantId] || {};
     return [v.productName || "—", vlabel(v), v.sku || "", String(l.qty), eur(l.price), v.retail ? eur(v.retail) : "—", eur(l.qty * l.price)];
-  });
+  };
+  const fotoPerRiga = {};
+  const body = [];
+  if (conFotoEff) {
+    let idx = 0;
+    gruppi.forEach(g => {
+      for (let k = 0; k < g.n; k++) {
+        const base = cella(righe[g.inizio + k]);
+        if (k === 0) {
+          body.push([{
+            content: "",
+            rowSpan: g.n,
+            styles: g.n === 1 ? {
+              minCellHeight: 46
+            } : {}
+          }, ...base]);
+          if (g.dati) fotoPerRiga[idx] = g.dati;
+        } else body.push(base);
+        idx++;
+      }
+    });
+  } else righe.forEach(l => body.push(cella(l)));
+  const off = conFotoEff ? 1 : 0;
+  const testa = (conFotoEff ? ["Foto"] : []).concat(["Articolo", "Variante", "SKU", "Q.tà", "Prezzo B2B", "Consigliato", "Subtotale"]);
+  const colonne = {};
+  colonne[3 + off] = {
+    halign: "right"
+  };
+  colonne[4 + off] = {
+    halign: "right"
+  };
+  colonne[5 + off] = {
+    halign: "right"
+  };
+  colonne[6 + off] = {
+    halign: "right"
+  };
+  if (conFotoEff) colonne[0] = {
+    cellWidth: 54,
+    halign: "center"
+  };
   doc.autoTable({
     startY: y,
-    head: [["Articolo", "Variante", "SKU", "Q.tà", "Prezzo B2B", "Consigliato", "Subtotale"]],
+    head: [testa],
     body,
     styles: {
       fontSize: 8.5,
@@ -2811,23 +2935,27 @@ function genOrderPDF(order, db) {
       fillColor: [20, 20, 20],
       fontSize: 8
     },
-    columnStyles: {
-      3: {
-        halign: "right"
-      },
-      4: {
-        halign: "right"
-      },
-      5: {
-        halign: "right"
-      },
-      6: {
-        halign: "right"
-      }
-    },
+    columnStyles: colonne,
     margin: {
       left: M,
       right: M
+    },
+    didDrawCell: data => {
+      if (!conFotoEff || data.section !== "body" || data.column.index !== 0) return;
+      const f = fotoPerRiga[data.row.index];
+      if (!f) return;
+      const pad = 3;
+      const maxW = data.cell.width - 2 * pad,
+        maxH = data.cell.height - 2 * pad;
+      if (maxW <= 0 || maxH <= 0) return;
+      const s = Math.min(maxW / f.w, maxH / f.h);
+      const w = f.w * s,
+        h = f.h * s;
+      try {
+        doc.addImage(f.dati, "JPEG", data.cell.x + (data.cell.width - w) / 2, data.cell.y + (data.cell.height - h) / 2, w, h);
+      } catch (e) {
+        console.error(e);
+      }
     }
   });
   y = doc.lastAutoTable.finalY + 16;
@@ -2975,8 +3103,11 @@ function SendModal({
       onClick: () => exportOrderGestionaleXLSX(order, db)
     }, "⬇ Excel gestionale"), /*#__PURE__*/React.createElement("button", {
       className: "btn light",
-      onClick: () => genOrderPDF(order, db)
+      onClick: () => scaricaPDFOrdine(order, db, false)
     }, "⬇ PDF"), /*#__PURE__*/React.createElement("button", {
+      className: "btn light",
+      onClick: () => scaricaPDFOrdine(order, db, true)
+    }, "⬇ PDF con foto"), /*#__PURE__*/React.createElement("button", {
       className: "btn",
       disabled: !to.trim(),
       onClick: send
@@ -3346,8 +3477,11 @@ function Orders({
     onClick: () => setSend(o)
   }, "Invia ordine"), " ", /*#__PURE__*/React.createElement("button", {
     className: "btn light sm",
-    onClick: () => genOrderPDF(o, db)
-  }, "Scarica PDF"), " "), o.status === "confermato" && isAdmin && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("button", {
+    onClick: () => scaricaPDFOrdine(o, db, false)
+  }, "Scarica PDF"), " ", /*#__PURE__*/React.createElement("button", {
+    className: "btn light sm",
+    onClick: () => scaricaPDFOrdine(o, db, true)
+  }, "PDF con foto"), " "), o.status === "confermato" && isAdmin && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("button", {
     className: "btn accent sm",
     onClick: () => advance(o)
   }, "Spedisci"), " "), isAdmin && /*#__PURE__*/React.createElement("button", {
