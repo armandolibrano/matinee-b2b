@@ -14,8 +14,14 @@
   body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--ink);font-size:14px;line-height:1.45}
   button{font-family:inherit;cursor:pointer}
   input,select,textarea{font-family:inherit;font-size:14px}
-  .app{min-height:100vh;display:flex;flex-direction:column}
-  .topbar{display:flex;align-items:center;justify-content:space-between;padding:14px 22px;background:var(--ink);color:#fff}
+  .app{min-height:100vh;height:100vh;height:100dvh;display:flex;flex-direction:column}
+  .topbar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 22px;background:var(--ink);color:#fff;flex-shrink:0}
+  .cartchip{display:flex;align-items:center;gap:10px;background:#262626;border:1px solid #3a3a3a;color:#fff;padding:7px 14px;border-radius:10px;font-size:13px;cursor:pointer;max-width:46vw;transition:.15s}
+  .cartchip:hover{background:#333}
+  .cartchip .c-name{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:220px}
+  .cartchip .c-pz{white-space:nowrap;color:#c9c6c1}
+  .cartchip .c-tot{white-space:nowrap;color:#e2c79a;font-weight:600}
+  .cartchip.empty{color:#c9c6c1;font-weight:500;border-style:dashed}
   .brand{display:flex;align-items:center;gap:12px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;font-size:15px}
   .brand small{letter-spacing:.24em;font-weight:400;font-size:10px;color:#b9b6b1;display:block}
   .who{display:flex;align-items:center;gap:14px;font-size:13px}
@@ -30,7 +36,7 @@
   .btn.accent{background:var(--accent2);border-color:var(--accent2)}
   .btn:disabled{opacity:.4;cursor:not-allowed}
   .shell{display:flex;flex:1;min-height:0}
-  .side{width:210px;background:var(--panel);border-right:1px solid var(--line);padding:16px 12px;flex-shrink:0}
+  .side{width:210px;background:var(--panel);border-right:1px solid var(--line);padding:16px 12px;flex-shrink:0;overflow-y:auto}
   .nav{display:flex;flex-direction:column;gap:4px}
   .nav button{display:flex;align-items:center;justify-content:space-between;gap:10px;text-align:left;border:none;background:transparent;padding:11px 12px;border-radius:10px;color:var(--muted);font-size:13.5px;font-weight:500}
   .nav button.active{background:var(--bg);color:var(--ink)}
@@ -154,11 +160,14 @@
   .lightbox{position:fixed;inset:0;background:rgba(15,15,15,.86);display:flex;align-items:center;justify-content:center;z-index:80;cursor:zoom-out;padding:24px}
   .lightbox img{max-width:92%;max-height:92%;object-fit:contain;border-radius:8px;box-shadow:0 20px 60px rgba(0,0,0,.5)}
   .lightbox .close{position:absolute;top:18px;right:24px;color:#fff;font-size:30px;cursor:pointer;line-height:1}
+  .credit{flex-shrink:0}
   @media(max-width:760px){
     .side{display:none}
     .row2{grid-template-columns:1fr}
     .variant-row{grid-template-columns:1fr 1fr;gap:6px}
     .main{padding:18px 14px}
+    .cartchip{max-width:40vw;padding:6px 10px}
+    .cartchip .c-name{max-width:90px}
   }
 </style>
 </head>
@@ -627,6 +636,13 @@ const SB = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   }
 });
 const N = x => x == null ? null : Number(x);
+/* Data di oggi in ora LOCALE (aaaa-mm-gg). new Date().toISOString() e' in UTC:
+   tra mezzanotte e le 2 ora italiana darebbe la data di ieri, e l'ordine
+   sparirebbe dal filtro "Oggi" di Ordini Danea. */
+const oggiISO = () => {
+  const d = new Date();
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+};
 /* ---------- ordinamento taglie: XS < S < M < L < XL < XXL ---------- */
 const SIZE_ORDER = {
   "xxs": 1,
@@ -846,6 +862,29 @@ function bozzaLeggi() {
   } catch (e) {
     return null;
   }
+}
+/* Carrello in corso: salvato sul computer dell'agente a ogni modifica, cosi'
+   un ricaricamento della pagina (F5 / Cmd+R) non lo cancella piu'.
+   Una chiave per agente: se sullo stesso computer entrano due agenti,
+   ognuno ritrova il proprio carrello. */
+const CART_KEY = "matinee_b2b_carrello_";
+function carrelloSalva(agentId, dati) {
+  try {
+    if (agentId) localStorage.setItem(CART_KEY + agentId, JSON.stringify(dati));
+  } catch (e) {}
+}
+function carrelloLeggi(agentId) {
+  try {
+    const t = agentId ? localStorage.getItem(CART_KEY + agentId) : null;
+    return t ? JSON.parse(t) : null;
+  } catch (e) {
+    return null;
+  }
+}
+function carrelloPulisci(agentId) {
+  try {
+    if (agentId) localStorage.removeItem(CART_KEY + agentId);
+  } catch (e) {}
 }
 async function chk(r) {
   if (r && r.error) throw new Error(r.error.message);
@@ -1733,9 +1772,10 @@ function AgentCart({
   session,
   cart,
   setCart,
+  clientId,
+  setClientId,
   goOrders
 }) {
-  const [clientId, setClientId] = useState("");
   const [shipId, setShipId] = useState("");
   const [payment, setPayment] = useState(PAYMENTS[0]);
   const [customPayment, setCustomPayment] = useState("");
@@ -1822,7 +1862,7 @@ function AgentCart({
         shipTo: ship ? ship.address : "",
         note: note.trim(),
         status: "bozza",
-        createdAt: new Date().toISOString().slice(0, 10),
+        createdAt: oggiISO(),
         shipping: sped,
         total
       };
@@ -1837,6 +1877,8 @@ function AgentCart({
         orders: [order, ...d.orders.filter(x => x.id !== order.id)]
       }));
       setCart({});
+      setClientId("");
+      carrelloPulisci(session.id);
       goOrders();
     } catch (e) {
       console.error(e);
@@ -4495,6 +4537,63 @@ function RecuperoOrdine({
   }, "Scarta")));
 }
 /* ---------- APP ---------- */
+/* Scelta del cliente del carrello: appare al primo articolo aggiunto (o dal
+   pulsante in alto). Il carrello attivo resta intestato a questo cliente. */
+function ScegliCliente({
+  clients,
+  onScegli,
+  onClose
+}) {
+  const [q, setQ] = useState("");
+  const list = clients.filter(c => !q || (c.name || "").toLowerCase().includes(q.toLowerCase())).slice().sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+  return /*#__PURE__*/React.createElement(Modal, {
+    title: "Per quale cliente stai ordinando?",
+    sub: "Il carrello sarà intestato a questo cliente. Potrai comunque cambiarlo dal carrello.",
+    onClose: onClose
+  }, /*#__PURE__*/React.createElement("input", {
+    placeholder: "Cerca cliente…",
+    value: q,
+    onChange: e => setQ(e.target.value),
+    autoFocus: true,
+    style: {
+      width: "100%",
+      marginBottom: 12
+    }
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      maxHeight: 340,
+      overflow: "auto",
+      border: "1px solid var(--line)",
+      borderRadius: 10
+    }
+  }, list.length === 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: 16,
+      color: "var(--muted)"
+    }
+  }, clients.length === 0 ? "Non hai ancora clienti in anagrafica: aggiungili prima da «I miei clienti»." : "Nessun cliente trovato con questa ricerca."), list.map(c => /*#__PURE__*/React.createElement("button", {
+    key: c.id,
+    onClick: () => onScegli(c.id),
+    style: {
+      display: "block",
+      width: "100%",
+      textAlign: "left",
+      border: "none",
+      borderBottom: "1px solid var(--line)",
+      background: "transparent",
+      padding: "11px 14px",
+      fontSize: 14
+    },
+    onMouseOver: e => e.currentTarget.style.background = "var(--bg)",
+    onMouseOut: e => e.currentTarget.style.background = "transparent"
+  }, /*#__PURE__*/React.createElement("strong", null, c.name), c.piva ? /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: "var(--muted)",
+      fontSize: 12,
+      marginLeft: 8
+    }
+  }, "P.IVA ", c.piva) : null))));
+}
 function App() {
   const [boot, setBoot] = useState("check"); // check | login | loading | ready | error
   const [db, setDb] = useState(null);
@@ -4503,6 +4602,11 @@ function App() {
   const [err, setErr] = useState("");
   const [tab, setTab] = useState("catalogo");
   const [cart, setCart] = useState({});
+  const [cartClient, setCartClient] = useState(""); /* cliente del carrello attivo (solo agenti) */
+  const [pickCliente, setPickCliente] = useState(false); /* modale di scelta del cliente */
+  const [attesaAggiunta, setAttesaAggiunta] = useState(null); /* aggiunta a carrello in attesa della scelta del cliente */
+  const [ripristinati, setRipristinati] = useState(0); /* pezzi ripristinati dopo un ricaricamento della pagina */
+  const cartPronto = useRef(false); /* il salvataggio parte solo DOPO il ripristino, per non sovrascriverlo */
   const [zoom, setZoom] = useState(null);
   const start = async () => {
     setBoot("loading");
@@ -4543,6 +4647,45 @@ function App() {
     const o = bozzaLeggi();
     if (o && o.id && o.agentId === (session && session.id) && !(db && db.orders.some(x => x.id === o.id))) setDaRecuperare(o);else if (o && db && db.orders.some(x => x.id === o.id)) bozzaPulisci();
   }, [boot]);
+  /* Carrello: ripristino dal computer dopo un ricaricamento della pagina (F5 / Cmd+R).
+     Vengono tenute solo le varianti che esistono ancora a catalogo e il cliente
+     solo se appartiene ancora al pacchetto dell'agente. */
+  useEffect(() => {
+    if (boot !== "ready" || !session || session.role !== "agent" || !db) {
+      cartPronto.current = false;
+      return;
+    }
+    const sv = carrelloLeggi(session.id);
+    if (sv) {
+      const vids = new Set();
+      db.products.forEach(p => p.variants.forEach(v => vids.add(v.id)));
+      const validi = {};
+      Object.entries(sv.cart || {}).forEach(([vid, q]) => {
+        const n = parseInt(q);
+        if (vids.has(vid) && n > 0) validi[vid] = n;
+      });
+      const cli = sv.clientId && db.clients.some(c => c.id === sv.clientId && c.agentId === session.id) ? sv.clientId : "";
+      setCart(validi);
+      setCartClient(cli);
+      setRipristinati(Object.values(validi).reduce((s, n) => s + n, 0));
+    }
+    cartPronto.current = true;
+  }, [boot]);
+  /* Carrello: salvataggio locale a ogni modifica (carrello o cliente) */
+  useEffect(() => {
+    if (!cartPronto.current || boot !== "ready" || !session || session.role !== "agent") return;
+    if (Object.keys(cart).length === 0 && !cartClient) carrelloPulisci(session.id);else carrelloSalva(session.id, {
+      clientId: cartClient,
+      cart
+    });
+  }, [cart, cartClient, boot]);
+  /* Valore merce del carrello (imponibile, senza spedizione e IVA) per la top bar */
+  const merceCarrello = useMemo(() => {
+    if (!db) return 0;
+    const prezzi = {};
+    db.products.forEach(p => p.variants.forEach(v => prezzi[v.id] = v.b2b));
+    return Math.round(Object.entries(cart).reduce((s, [vid, q]) => s + q * (prezzi[vid] || 0), 0) * 100) / 100;
+  }, [db, cart]);
   /* Controllo periodico della sessione: se il token e' morto lo diciamo subito,
      invece di lasciar lavorare l'agente per ore contro un database che rifiuta. */
   const [sessScaduta, setSessScaduta] = useState(false);
@@ -4577,6 +4720,8 @@ function App() {
       return;
     }
     setCart({});
+    setCartClient("");
+    setRipristinati(0);
     await start();
   };
   const logout = async () => {
@@ -4586,6 +4731,9 @@ function App() {
     setSession(null);
     setDb(null);
     setCart({});
+    setCartClient("");
+    setRipristinati(0);
+    cartPronto.current = false;
     setBoot("login");
   };
   const panel = (title, body, danger) => /*#__PURE__*/React.createElement("div", {
@@ -4629,6 +4777,24 @@ function App() {
   const isAgent = session.role === "agent";
   const roleLabel = isAdmin ? "Amministrazione" : isDir ? "Direttore commerciale" : "Agente · " + session.zone;
   const cartCount = Object.values(cart).reduce((s, n) => s + n, 0);
+  const cliCarrello = db.clients.find(c => c.id === cartClient) || null;
+  /* Prima aggiunta a carrello senza cliente scelto: si apre la scelta del
+     cliente e l'aggiunta viene applicata subito dopo la conferma. Un click
+     su "−" a quantità zero non deve invece aprire nulla. */
+  const setCartAgent = up => {
+    if (!cartClient) {
+      const next = typeof up === "function" ? up(cart) : up;
+      const nNext = Object.values(next).reduce((s, x) => s + x, 0);
+      if (nNext > cartCount) {
+        setAttesaAggiunta(() => () => next);
+        setPickCliente(true);
+        return;
+      }
+      setCart(next);
+      return;
+    }
+    setCart(up);
+  };
   const nav = isAdmin ? [["dashboard", "Dashboard"], ["catalogo", "Catalogo"], ["scorte", "Scorte"], ["ordini", "Ordini"], ["danea", "Ordini Danea"], ["clienti", "Clienti"], ["agenti", "Agenti"]] : isDir ? [["dashboard", "Dashboard"], ["ordini", "Ordini agenti"], ["scorte", "Scorte"], ["agenti", "Agenti"], ["clienti", "Clienti"], ["catalogo", "Catalogo"]] : [["catalogo", "Catalogo"], ["carrello", "Carrello"], ["ordini", "I miei ordini"], ["clienti", "I miei clienti"]];
   return /*#__PURE__*/React.createElement("div", {
     className: "app"
@@ -4636,7 +4802,19 @@ function App() {
     className: "topbar"
   }, /*#__PURE__*/React.createElement("div", {
     className: "brand"
-  }, "Matinee", /*#__PURE__*/React.createElement("small", null, "B2B Agenti")), /*#__PURE__*/React.createElement("div", {
+  }, "Matinee", /*#__PURE__*/React.createElement("small", null, "B2B Agenti")), isAgent && /*#__PURE__*/React.createElement("div", {
+    className: "cartchip" + (cartClient ? "" : " empty"),
+    onClick: () => {
+      if (cartClient) setTab("carrello");else setPickCliente(true);
+    },
+    title: cartClient ? "Vai al carrello" : "Scegli il cliente per cui stai ordinando"
+  }, cartClient ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("span", {
+    className: "c-name"
+  }, cliCarrello ? cliCarrello.name : "Cliente"), /*#__PURE__*/React.createElement("span", {
+    className: "c-pz"
+  }, cartCount, " pz"), /*#__PURE__*/React.createElement("span", {
+    className: "c-tot"
+  }, eur(merceCarrello))) : "＋ Seleziona cliente"), /*#__PURE__*/React.createElement("div", {
     className: "who"
   }, /*#__PURE__*/React.createElement("div", {
     style: {
@@ -4655,7 +4833,24 @@ function App() {
       fontSize: 14,
       fontWeight: 600
     }
-  }, "Sessione scaduta — da adesso il database rifiuta i salvataggi. Premi «Esci» in alto a destra e rientra con le tue credenziali prima di continuare a lavorare."), daRecuperare && /*#__PURE__*/React.createElement(RecuperoOrdine, {
+  }, "Sessione scaduta — da adesso il database rifiuta i salvataggi. Premi «Esci» in alto a destra e rientra con le tue credenziali prima di continuare a lavorare."), ripristinati > 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: "#eef6ef",
+      color: "var(--ok)",
+      padding: "8px 18px",
+      fontSize: 13,
+      fontWeight: 600,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: 12,
+      borderBottom: "1px solid var(--line)",
+      flexShrink: 0
+    }
+  }, /*#__PURE__*/React.createElement("span", null, "Carrello ripristinato dopo il ricaricamento della pagina — ", ripristinati, " pz", cliCarrello ? " · " + cliCarrello.name : ""), /*#__PURE__*/React.createElement("button", {
+    className: "btn light sm",
+    onClick: () => setRipristinati(0)
+  }, "OK")), daRecuperare && /*#__PURE__*/React.createElement(RecuperoOrdine, {
     ordine: daRecuperare,
     db: db,
     setDb: setDb,
@@ -4683,7 +4878,7 @@ function App() {
   }), tab === "catalogo" && (isAgent ? /*#__PURE__*/React.createElement(AgentCatalog, {
     db: db,
     cart: cart,
-    setCart: setCart,
+    setCart: setCartAgent,
     onZoom: setZoom
   }) : /*#__PURE__*/React.createElement(Catalog, {
     db: db,
@@ -4696,6 +4891,8 @@ function App() {
     session: session,
     cart: cart,
     setCart: setCart,
+    clientId: cartClient,
+    setClientId: setCartClient,
     goOrders: () => setTab("ordini")
   }), tab === "agenti" && (isAdmin || isDir) && /*#__PURE__*/React.createElement(Agents, {
     db: db,
@@ -4711,7 +4908,19 @@ function App() {
     session: session
   }), tab === "danea" && isAdmin && /*#__PURE__*/React.createElement(DaneaOrders, {
     db: db
-  }))), /*#__PURE__*/React.createElement(Footer, null), zoom && /*#__PURE__*/React.createElement("div", {
+  }))), /*#__PURE__*/React.createElement(Footer, null), pickCliente && isAgent && /*#__PURE__*/React.createElement(ScegliCliente, {
+    clients: db.clients.filter(c => c.agentId === session.id),
+    onScegli: id => {
+      setCartClient(id);
+      if (attesaAggiunta) setCart(attesaAggiunta);
+      setAttesaAggiunta(null);
+      setPickCliente(false);
+    },
+    onClose: () => {
+      setAttesaAggiunta(null);
+      setPickCliente(false);
+    }
+  }), zoom && /*#__PURE__*/React.createElement("div", {
     className: "lightbox",
     onClick: () => setZoom(null)
   }, /*#__PURE__*/React.createElement("span", {
