@@ -23,6 +23,8 @@
   .cartchip .c-tot{white-space:nowrap;color:#e2c79a;font-weight:600}
   .cartchip .c-edit{color:#9a978f;font-size:11px;text-decoration:underline;cursor:pointer;white-space:nowrap}
   .cartchip .c-edit:hover{color:#fff}
+  .cartchip .c-x{color:#9a978f;font-size:15px;line-height:1;cursor:pointer;padding:0 2px}
+  .cartchip .c-x:hover{color:#e88}
   .cartchip.empty{color:#c9c6c1;font-weight:500;border-style:dashed}
   .brand{display:flex;align-items:center;gap:12px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;font-size:15px}
   .brand small{letter-spacing:.24em;font-weight:400;font-size:10px;color:#b9b6b1;display:block}
@@ -4823,7 +4825,14 @@ function App() {
       e.stopPropagation();
       setPickCliente(true);
     }
-  }, "cambia")) : "＋ Seleziona cliente"), /*#__PURE__*/React.createElement("div", {
+  }, "cambia"), cartCount === 0 && /*#__PURE__*/React.createElement("span", {
+    className: "c-x",
+    title: "Rimuovi il cliente dal carrello",
+    onClick: e => {
+      e.stopPropagation();
+      setCartClient("");
+    }
+  }, "×")) : "＋ Seleziona cliente"), /*#__PURE__*/React.createElement("div", {
     className: "who"
   }, /*#__PURE__*/React.createElement("div", {
     style: {
