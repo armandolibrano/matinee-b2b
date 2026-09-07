@@ -79,12 +79,13 @@
   .price-cost{color:var(--muted)}
   .price-b2b{font-weight:600}
   .price-retail{color:var(--accent2)}
-  .overlay{position:fixed;inset:0;background:rgba(20,20,20,.42);display:flex;align-items:flex-start;justify-content:center;padding:40px 16px;overflow:auto;z-index:50}
-  .modal{background:#fff;border-radius:16px;width:100%;max-width:640px;padding:24px 26px;box-shadow:0 24px 60px rgba(0,0,0,.24)}
+  .overlay{position:fixed;inset:0;background:rgba(20,20,20,.42);display:flex;align-items:center;justify-content:center;padding:20px 16px;overflow:auto;z-index:50}
+  .modal{background:#fff;border-radius:16px;width:100%;max-width:640px;padding:24px 26px;box-shadow:0 24px 60px rgba(0,0,0,.24);display:flex;flex-direction:column;max-height:calc(100vh - 40px);max-height:calc(100dvh - 40px)}
+  .modal-body{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding-right:6px;margin-right:-6px}
   .modal.wide{max-width:900px}
   .modal h2{margin:0 0 4px;font-size:19px}
   .modal .sub{color:var(--muted);margin:0 0 18px;font-size:13px}
-  .modal-foot{display:flex;justify-content:flex-end;gap:10px;margin-top:20px;padding-top:16px;border-top:1px solid var(--line)}
+  .modal-foot{display:flex;justify-content:flex-end;flex-wrap:wrap;gap:10px;margin-top:16px;padding-top:14px;border-top:1px solid var(--line);flex:0 0 auto;position:sticky;bottom:0;background:#fff;z-index:2}
   .x{border:none;background:transparent;font-size:22px;color:var(--muted);cursor:pointer;line-height:1}
   .between{display:flex;align-items:center;justify-content:space-between;gap:12px}
   .login-wrap{flex:1;display:flex;align-items:center;justify-content:center;padding:20px}
@@ -136,6 +137,9 @@
   .addqty button{width:26px;height:26px;border:1px solid var(--line);background:#fff;border-radius:7px;font-size:14px}
   .addqty .n{min-width:22px;text-align:center;font-weight:600}
   .cartbar{position:sticky;bottom:0;margin-top:16px}
+  .cart-grid{grid-template-columns:1.6fr 1fr;gap:18px}
+  .cart-side{position:sticky;top:0;max-height:calc(100vh - 32px);max-height:calc(100dvh - 32px);overflow-y:auto;overscroll-behavior:contain}
+  .cart-side .cart-confirm{position:sticky;bottom:0;box-shadow:0 0 0 8px var(--panel)}
   .bar-row{display:flex;align-items:center;gap:10px;margin:7px 0}
   .bar-row .lab{width:140px;font-size:12.5px;color:#4a4843;flex-shrink:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .bar-track{flex:1;background:#f0eee9;border-radius:6px;height:22px;overflow:hidden}
@@ -165,6 +169,21 @@
   .lightbox img{max-width:92%;max-height:92%;object-fit:contain;border-radius:8px;box-shadow:0 20px 60px rgba(0,0,0,.5)}
   .lightbox .close{position:absolute;top:18px;right:24px;color:#fff;font-size:30px;cursor:pointer;line-height:1}
   .credit{flex-shrink:0}
+  @media(max-width:1000px){
+    .cart-grid{grid-template-columns:1fr}
+    .cart-side{position:static;max-height:none;overflow:visible}
+  }
+  @media(max-height:780px){
+    .overlay{padding:10px 12px;align-items:flex-start}
+    .modal{padding:16px 18px;max-height:calc(100vh - 20px);max-height:calc(100dvh - 20px)}
+    .modal .sub{margin-bottom:12px}
+    .field{margin-bottom:10px}
+    .modal-foot{margin-top:12px;padding-top:10px}
+  }
+  @media(max-width:560px){
+    .modal{padding:14px;border-radius:12px}
+    .modal-foot .btn{flex:1 1 auto}
+  }
   @media(max-width:760px){
     .side{display:none}
     .row2{grid-template-columns:1fr}
@@ -1116,7 +1135,9 @@ function Modal({
   }, sub)), /*#__PURE__*/React.createElement("button", {
     className: "x",
     onClick: onClose
-  }, "×")), children, foot && /*#__PURE__*/React.createElement("div", {
+  }, "×")), /*#__PURE__*/React.createElement("div", {
+    className: "modal-body"
+  }, children), foot && /*#__PURE__*/React.createElement("div", {
     className: "modal-foot"
   }, foot)));
 }
@@ -1896,11 +1917,7 @@ function AgentCart({
   }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("h1", null, "Carrello"), /*#__PURE__*/React.createElement("p", null, pieces, " pezzi · ", lines.length, " righe"))), lines.length === 0 ? /*#__PURE__*/React.createElement("div", {
     className: "panel empty-state"
   }, "Il carrello è vuoto. Vai al ", /*#__PURE__*/React.createElement("b", null, "Catalogo"), " e aggiungi i capi.") : /*#__PURE__*/React.createElement("div", {
-    className: "grid",
-    style: {
-      gridTemplateColumns: "1.6fr 1fr",
-      gap: 18
-    }
+    className: "grid cart-grid"
   }, /*#__PURE__*/React.createElement("div", {
     className: "panel",
     style: {
@@ -1934,11 +1951,7 @@ function AgentCart({
     className: "btn danger sm",
     onClick: () => setQty(l.vid, 0)
   }, "Rimuovi"))))))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
-    className: "panel",
-    style: {
-      position: "sticky",
-      top: 0
-    }
+    className: "panel cart-side"
   }, /*#__PURE__*/React.createElement("strong", null, "Conferma ordine"), /*#__PURE__*/React.createElement("div", {
     style: {
       marginTop: 12
@@ -2061,7 +2074,7 @@ function AgentCart({
       marginTop: 6
     }
   }, "Il carrello non è stato toccato: nulla è andato perso. Controlla la connessione, se il messaggio parla di sessione premi «Esci» e rientra, poi premi di nuovo «Conferma ordine» (l'ordine manterrà lo stesso numero).")), /*#__PURE__*/React.createElement("button", {
-    className: "btn",
+    className: "btn cart-confirm",
     style: {
       width: "100%"
     },
