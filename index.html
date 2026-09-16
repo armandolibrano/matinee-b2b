@@ -3409,6 +3409,248 @@ function DaneaOrders({
     onClick: () => exportDaneaZip(sel, db, zipName)
   }, "⬇ Scarica per Danea (", sel.length, " ", sel.length === 1 ? "ordine" : "ordini", ")")));
 }
+/* ---------- DUPLICA ORDINE ----------
+   Crea un nuovo ordine (in bozza, con un nuovo numero) partendo da uno
+   esistente. Si possono cambiare cliente, destinazione, pagamento, consegna
+   e note; le righe restano le stesse. Stessa rete di sicurezza della conferma
+   dal carrello: sessione controllata, scrittura attesa e verificata, e il
+   numero gia' assegnato viene riusato se il primo tentativo fallisce. */
+function DuplicaOrdine({
+  ordine,
+  db,
+  setDb,
+  session,
+  onChiudi
+}) {
+  const h = React.createElement;
+  const isSup = session.role === "admin" || session.role === "direttore";
+  const clienti = (isSup ? db.clients : db.clients.filter(c => c.agentId === session.id)).slice().sort((a, b) => String(a.name || "").localeCompare(String(b.name || ""), "it"));
+  const [clientId, setClientId] = useState(ordine.clientId || "");
+  const [shipId, setShipId] = useState(ordine.shipId || "");
+  const [payment, setPayment] = useState(ordine.payment || PAYMENTS[0]);
+  const [delivery, setDelivery] = useState(ordine.delivery || DELIVERIES[0]);
+  const [note, setNote] = useState(ordine.note || "");
+  const [listino, setListino] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const inSospeso = useRef(null);
+  const cliente = db.clients.find(c => c.id === clientId) || {};
+  const dest = cliente.shipping && cliente.shipping.length ? cliente.shipping : cliente.billing ? [{
+    id: "b",
+    label: "Sede",
+    address: cliente.billing
+  }] : [];
+  /* niente useEffect: la destinazione valida si calcola al volo */
+  const shipEff = dest.some(s => s.id === shipId) ? shipId : dest[0] ? dest[0].id : "";
+  const destSel = dest.find(s => s.id === shipEff) || null;
+  const vI = useMemo(() => {
+    const m = {};
+    db.products.forEach(p => p.variants.forEach(v => {
+      m[v.id] = {
+        b2b: v.b2b,
+        productId: p.id,
+        nome: p.name,
+        etichetta: vlabel(v)
+      };
+    }));
+    return m;
+  }, [db.products]);
+  const righe = (ordine.lines || []).map(l => {
+    const v = vI[l.variantId];
+    if (!v) return null;
+    const attuale = N(v.b2b) || 0;
+    return {
+      variantId: l.variantId,
+      productId: v.productId,
+      qty: l.qty,
+      vecchio: N(l.price) || 0,
+      attuale,
+      price: listino ? attuale : N(l.price) || 0,
+      nome: v.nome,
+      etichetta: v.etichetta
+    };
+  }).filter(Boolean);
+  const perse = (ordine.lines || []).length - righe.length;
+  const diverse = righe.filter(r => Math.abs(r.attuale - r.vecchio) > 0.004).length;
+  const r2 = x => Math.round(x * 100) / 100;
+  const merce = r2(righe.reduce((s, r) => s + r.qty * r.price, 0));
+  const sped = righe.length ? SPEDIZIONE : 0;
+  const total = r2(merce + sped);
+  const pezzi = righe.reduce((s, r) => s + r.qty, 0);
+  const cambioCliente = clientId !== ordine.clientId;
+  const ok = !!clientId && righe.length > 0 && !!payment && !!delivery;
+  const opz = (base, corr) => !corr || base.indexOf(corr) >= 0 ? base : [corr].concat(base);
+  const duplica = async () => {
+    if (busy) return;
+    setBusy(true);
+    setErr("");
+    try {
+      if (!(await sessioneViva())) throw new Error(MSG_SESSIONE);
+      let id = inSospeso.current ? inSospeso.current.id : null;
+      let number = inSospeso.current ? inSospeso.current.number : null;
+      if (number == null) {
+        const r = await SB.rpc('next_order_number');
+        if (r.error) throw new Error("numero d'ordine non generato — " + r.error.message);
+        number = Number(r.data);
+        id = uidNew("o", db.orders);
+        inSospeso.current = {
+          id,
+          number
+        };
+      }
+      const nuovo = {
+        id,
+        number,
+        agentId: ordine.agentId || session.id,
+        clientId,
+        lines: righe.map(r => ({
+          variantId: r.variantId,
+          productId: r.productId,
+          qty: r.qty,
+          price: r.price
+        })),
+        payment,
+        delivery,
+        shipId: destSel ? destSel.id : "",
+        shipTo: destSel ? destSel.address : "",
+        note: note.trim(),
+        status: "bozza",
+        createdAt: oggiISO(),
+        shipping: sped,
+        total
+      };
+      bozzaSalva(nuovo);
+      await dbSaveOrder(nuovo);
+      const ver = await SB.from('orders').select('id').eq('id', nuovo.id);
+      if (!ver.error && (!ver.data || ver.data.length === 0)) throw new Error("il database non ha registrato l'ordine (permessi o sessione).");
+      bozzaPulisci();
+      inSospeso.current = null;
+      setDb(d => ({
+        ...d,
+        orders: [nuovo, ...d.orders.filter(x => x.id !== nuovo.id)]
+      }));
+      onChiudi(nuovo);
+    } catch (e) {
+      console.error(e);
+      setErr("ORDINE NON DUPLICATO — " + (e.message || e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return h(Modal, {
+    title: "Duplica ordine #" + ordine.number,
+    sub: "Crea un nuovo ordine con le stesse righe. Puoi cambiare cliente e destinazione.",
+    onClose: () => {
+      if (!busy) onChiudi(null);
+    },
+    foot: h(React.Fragment, null, h("button", {
+      className: "btn light",
+      disabled: busy,
+      onClick: () => onChiudi(null)
+    }, "Annulla"), h("button", {
+      className: "btn",
+      disabled: !ok || busy,
+      onClick: duplica
+    }, busy ? "Creazione in corso…" : "Crea ordine duplicato"))
+  }, err && h("div", {
+    style: {
+      marginBottom: 10,
+      padding: "10px 12px",
+      border: "2px solid var(--danger)",
+      borderRadius: 10,
+      color: "var(--danger)",
+      fontSize: 13,
+      fontWeight: 600,
+      lineHeight: 1.45
+    }
+  }, err, h("div", {
+    style: {
+      fontWeight: 400,
+      marginTop: 6
+    }
+  }, "L'ordine originale non è stato toccato. Se il messaggio parla di sessione premi «Esci», rientra e riprova: il duplicato manterrà lo stesso numero.")), h("div", {
+    className: "panel",
+    style: {
+      marginBottom: 14
+    }
+  }, h("div", {
+    className: "between"
+  }, h("strong", null, "Il duplicato"), h("span", {
+    className: "tag-small"
+  }, "nuovo numero, stato bozza")), h("p", {
+    className: "hint",
+    style: {
+      margin: "6px 0 0"
+    }
+  }, righe.length, righe.length === 1 ? " riga · " : " righe · ", pezzi, " pezzi · merce ", eur(merce), sped > 0 ? " + spedizione " + eur(sped) : "", " · totale imponibile ", h("strong", null, eur(total)), cambioCliente ? " · cliente cambiato" : "", destSel ? " · consegna a " + destSel.address : "")), h(Field, {
+    label: "Cliente"
+  }, h("select", {
+    value: clientId,
+    onChange: e => setClientId(e.target.value)
+  }, clienti.length === 0 && h("option", {
+    value: ""
+  }, "Nessun cliente disponibile"), clienti.map(c => h("option", {
+    key: c.id,
+    value: c.id
+  }, c.name)))), h(Field, {
+    label: "Destinazione della merce",
+    hint: dest.length === 0 ? "Questo cliente non ha né indirizzi di consegna né indirizzo di fatturazione: aggiungine uno in Clienti." : null
+  }, h("select", {
+    value: shipEff,
+    onChange: e => setShipId(e.target.value),
+    disabled: dest.length === 0
+  }, dest.map(s => h("option", {
+    key: s.id,
+    value: s.id
+  }, (s.label ? s.label + " — " : "") + s.address)))), h("div", {
+    className: "row2"
+  }, h(Field, {
+    label: "Pagamento"
+  }, h("select", {
+    value: payment,
+    onChange: e => setPayment(e.target.value)
+  }, opz(PAYMENTS, ordine.payment).map(p => h("option", {
+    key: p,
+    value: p
+  }, p)))), h(Field, {
+    label: "Consegna"
+  }, h("select", {
+    value: delivery,
+    onChange: e => setDelivery(e.target.value)
+  }, opz(DELIVERIES, ordine.delivery).map(p => h("option", {
+    key: p,
+    value: p
+  }, p))))), h(Field, {
+    label: "Note"
+  }, h("textarea", {
+    rows: 2,
+    value: note,
+    onChange: e => setNote(e.target.value)
+  })), diverse > 0 && h("label", {
+    style: {
+      display: "flex",
+      alignItems: "flex-start",
+      gap: 8,
+      margin: "2px 0 12px",
+      fontSize: 12.5,
+      cursor: "pointer"
+    }
+  }, h("input", {
+    type: "checkbox",
+    checked: listino,
+    onChange: e => setListino(e.target.checked),
+    style: {
+      marginTop: 2
+    }
+  }), h("span", null, "Aggiorna ai prezzi di listino attuali — ", h("strong", null, diverse), diverse === 1 ? " riga ha un prezzo" : " righe hanno un prezzo", " diverso da quello dell'ordine originale. Se lascio la casella vuota il duplicato mantiene i prezzi dell'ordine di partenza.")), perse > 0 && h("p", {
+    className: "hint",
+    style: {
+      color: "var(--danger)",
+      fontWeight: 600
+    }
+  }, perse === 1 ? "1 riga dell'ordine originale non è più a catalogo e verrà esclusa dal duplicato." : perse + " righe dell'ordine originale non sono più a catalogo e verranno escluse dal duplicato."));
+}
+
 function Orders({
   db,
   setDb,
@@ -3422,6 +3664,7 @@ function Orders({
   const [del, setDel] = useState(null);
   const [delBusy, setDelBusy] = useState(false);
   const [delErr, setDelErr] = useState("");
+  const [dup, setDup] = useState(null);
   const [fAgent, setFAgent] = useState("all");
   const agentsList = db.users.filter(u => u.role === "agent");
   const base = isSup ? db.orders : db.orders.filter(o => o.agentId === session.id);
@@ -3528,7 +3771,10 @@ function Orders({
   }, /*#__PURE__*/React.createElement("button", {
     className: "btn light sm",
     onClick: () => setEdit(o)
-  }, isDir ? "Dettaglio" : "Modifica"), " ", o.status === "bozza" && !isDir && /*#__PURE__*/React.createElement("button", {
+  }, isDir ? "Dettaglio" : "Modifica"), " ", !isDir && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("button", {
+    className: "btn light sm",
+    onClick: () => setDup(o)
+  }, "Duplica"), " "), o.status === "bozza" && !isDir && /*#__PURE__*/React.createElement("button", {
     className: "btn accent sm",
     onClick: () => advance(o)
   }, "Conferma"), o.status !== "bozza" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("button", {
@@ -3584,7 +3830,13 @@ function Orders({
       color: "var(--danger)",
       fontWeight: 600
     }
-  }, delErr)));
+  }, delErr)), dup && /*#__PURE__*/React.createElement(DuplicaOrdine, {
+    ordine: dup,
+    db: db,
+    setDb: setDb,
+    session: session,
+    onChiudi: () => setDup(null)
+  }));
 }
 function OrderEditor({
   order,
