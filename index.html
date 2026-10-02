@@ -3032,6 +3032,13 @@ async function genOrderPDF(order, db, conFoto) {
     }
   });
   y = doc.lastAutoTable.finalY + 16;
+  const PH = doc.internal.pageSize.getHeight();
+  const ensure = sp => {
+    if (y + sp > PH - 40) {
+      doc.addPage();
+      y = 52;
+    }
+  };
   const pieces = order.lines.reduce((s, l) => s + l.qty, 0);
   const r2 = x => Math.round(x * 100) / 100;
   const merce = r2(ordMerce(order));
@@ -3040,6 +3047,10 @@ async function genOrderPDF(order, db, conFoto) {
   const iva = r2(imponibile * IVA);
   const ivato = r2(imponibile + iva);
   const LBL = W - M - 150;
+  /* Il riepilogo (totali + pagamento + consegna) va tenuto unito: se la tabella
+     finisce in fondo alla pagina, senza questo controllo il blocco veniva
+     disegnato fuori dal foglio e pagamento/consegna/note sparivano dal PDF. */
+  ensure((sped > 0 ? 30 : 0) + 15 + 6 + 13 + 22 + 13 + 13 + 10);
   doc.setFont("helvetica", "bold");
   doc.setFontSize(11);
   doc.text("Totale " + pieces + " pz", M, y);
@@ -3093,23 +3104,18 @@ async function genOrderPDF(order, db, conFoto) {
   y += 13;
   doc.text("Consegna (data di spedizione): " + order.delivery, M, y);
   y += 13;
-  if (order.shipTo) {
-    const st = doc.splitTextToSize("Indirizzo di consegna: " + order.shipTo, W - 2 * M);
-    doc.text(st, M, y);
-    y += st.length * 12;
-  }
-  if (order.note) {
-    const nt = doc.splitTextToSize("Note: " + order.note, W - 2 * M);
-    doc.text(nt, M, y);
-    y += nt.length * 12;
-  }
-  const PH = doc.internal.pageSize.getHeight();
-  const ensure = sp => {
-    if (y + sp > PH - 40) {
-      doc.addPage();
-      y = 52;
-    }
+  /* Indirizzo e note possono essere lunghi: controllo di fine pagina riga per riga */
+  const righeTesto = txt => {
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9.5);
+    doc.splitTextToSize(txt, W - 2 * M).forEach(ln => {
+      ensure(12);
+      doc.text(ln, M, y);
+      y += 12;
+    });
   };
+  if (order.shipTo) righeTesto("Indirizzo di consegna: " + order.shipTo);
+  if (order.note) righeTesto("Note: " + order.note);
   const sign = () => {
     ensure(34);
     doc.setTextColor(20);
